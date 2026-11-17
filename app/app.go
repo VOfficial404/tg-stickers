@@ -67,10 +67,12 @@ type app struct {
 	}
 	create createForm
 
-	// 上传选项：贴纸对应的表情，动图超过 3 秒时加速还是截取
-	emoji string
-	fit   int
-	queue []*job
+	// 上传选项只在入队时读取，队列保存各自的完整副本。
+	emoji    string
+	fit      int
+	media    mediaForm
+	gifMedia mediaForm
+	queue    []*job
 
 	gifs        []api.GIF
 	gifsLoaded  bool
@@ -103,7 +105,7 @@ type createForm struct {
 // job 是上传队列里的一个文件；target 是贴纸包的链接名，空表示存进 GIF 收藏
 type job struct {
 	path, target string
-	emoji, fit   string
+	upload       api.Upload
 	state        jobState
 	err          string
 }
@@ -546,9 +548,14 @@ func (a *app) submitCreate() {
 		f.err = "至少选一张图片或动图作为第一张贴纸"
 		return
 	}
+	upload, err := a.uploadSnapshot(true)
+	if err != nil {
+		f.err = err.Error()
+		return
+	}
 	f.busy, f.err = true, ""
-	cs := api.CreateSet{Title: f.title, ShortName: f.shortName, Upload: api.Upload{Emoji: a.emoji, Fit: fits[a.fit]}}
-	first, rest := f.files[0], f.files[1:]
+	cs := api.CreateSet{Title: f.title, ShortName: f.shortName, Upload: upload}
+	first, rest := f.files[0], slices.Clone(f.files[1:])
 	request(a, func(ctx context.Context, c *api.Client) (api.Set, error) { return c.CreateSet(ctx, cs, first) }, func(s api.Set, err error) {
 		a.create.busy = false
 		if err != nil {
@@ -560,7 +567,7 @@ func (a *app) submitCreate() {
 		a.applySet(s)
 		a.page = pageSets
 		a.toast("已新建「" + s.Title + "」")
-		a.enqueue(rest, s.ShortName)
+		a.enqueueUpload(rest, s.ShortName, upload)
 	})
 }
 
@@ -591,13 +598,28 @@ func (a *app) checkFiles(paths []string) []string {
 
 // enqueue 把文件排进上传队列；target 为空表示存进 GIF 收藏
 func (a *app) enqueue(paths []string, target string) {
+	upload, err := a.uploadSnapshot(target != "")
+	if err != nil {
+		a.toast(err.Error())
+		return
+	}
+	a.enqueueUpload(paths, target, upload)
+}
+
+// enqueueUpload 接收表单的值快照，新建包的后续文件也沿用提交时的选项。
+func (a *app) enqueueUpload(paths []string, target string, upload api.Upload) {
 	for _, p := range a.checkFiles(paths) {
-		a.queue = append(a.queue, &job{path: p, target: target, emoji: a.emoji, fit: fits[a.fit]})
+		a.queue = append(a.queue, &job{path: p, target: target, upload: upload})
 	}
 	a.pump()
 }
 
 func (a *app) pickFiles(target string) {
+	upload, err := a.uploadSnapshot(target != "")
+	if err != nil {
+		a.toast(err.Error())
+		return
+	}
 	pick := a.openFiles
 	title := "选择要加进贴纸包的图片或动图"
 	if target == "" {
@@ -610,7 +632,7 @@ func (a *app) pickFiles(target string) {
 				a.toast("打开文件失败：" + err.Error())
 				return
 			}
-			a.enqueue(files, target)
+			a.enqueueUpload(files, target, upload)
 		}
 	})
 }
@@ -634,16 +656,17 @@ func (a *app) pump() {
 	j := next
 	j.state = jobRunning
 	if j.target == "" {
-		request(a, func(ctx context.Context, c *api.Client) ([]api.GIF, error) { return c.AddGIF(ctx, j.path) }, func(g []api.GIF, err error) {
+		request(a, func(ctx context.Context, c *api.Client) ([]api.GIF, error) {
+			return c.AddGIF(ctx, j.path, j.upload.MediaOptions)
+		}, func(g []api.GIF, err error) {
 			if a.finish(j, err) {
 				a.gifs, a.gifsLoaded = g, true
 			}
 		})
 		return
 	}
-	u := api.Upload{Emoji: j.emoji, Fit: j.fit}
 	request(a, func(ctx context.Context, c *api.Client) (api.Set, error) {
-		return c.AddSticker(ctx, j.target, u, j.path)
+		return c.AddSticker(ctx, j.target, j.upload, j.path)
 	}, func(s api.Set, err error) {
 		if a.finish(j, err) {
 			a.applySet(s)

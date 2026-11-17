@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/VOfficial404/tg-stickers/api"
 )
 
 // Telegram 对贴纸的要求，见 https://core.telegram.org/stickers
@@ -138,6 +140,9 @@ func (t Tool) Probe(ctx context.Context, path string) (Info, error) {
 	if info.FPS <= 0 {
 		info.FPS = parseRate(s.Real)
 	}
+	if info.Animated() && info.Duration <= 0 && info.FPS > 0 {
+		info.Duration = float64(info.Frames) / info.FPS
+	}
 	if !info.Animated() {
 		info.Duration = 0
 	} else if info.FPS <= 0 && info.Duration > 0 {
@@ -167,9 +172,6 @@ func parseRate(s string) float64 {
 	return n / d
 }
 
-// stickerScale 让长边正好 512、短边按比例且是偶数（VP9 的 yuva420p 要求偶数）
-const stickerScale = "scale='if(gte(iw,ih),512,-2)':'if(gte(iw,ih),-2,512)':flags=lanczos"
-
 // Sticker 是转换好的贴纸文件
 type Sticker struct {
 	Path string
@@ -178,25 +180,28 @@ type Sticker struct {
 }
 
 // 视频贴纸逐步降低质量，直到不超过 256KB
-var videoAttempts = []struct {
+var videoAttempts = [...]struct {
 	crf    int
 	maxFPS float64
 }{
-	{30, MaxVideoFPS}, {36, MaxVideoFPS}, {42, MaxVideoFPS}, {48, MaxVideoFPS},
+	{24, MaxVideoFPS}, {30, MaxVideoFPS}, {36, MaxVideoFPS}, {42, MaxVideoFPS}, {48, MaxVideoFPS},
 	{52, 24}, {56, 20}, {60, 15}, {63, 12},
 }
 
-// Sticker 把 in 转换成贴纸放进 dir：动图转成视频贴纸，单帧图片转成静态贴纸。
-// fit 是动图超过 3 秒时的处理方式："trim" 只取前 3 秒，其他值都加速到 3 秒以内。
-func (t Tool) Sticker(ctx context.Context, in, dir, fit string) (Sticker, error) {
+// Sticker 在服务器上剪辑、调整尺寸并转换贴纸，最后仍需满足 Telegram 的三秒和 256 KB 限制。
+func (t Tool) Sticker(ctx context.Context, in, dir string, opts api.Upload) (Sticker, error) {
 	info, err := t.Probe(ctx, in)
 	if err != nil {
 		return Sticker{}, err
 	}
-	if !info.Animated() {
-		return t.staticSticker(ctx, in, dir, info)
+	plan, err := planMedia(info, opts.MediaOptions, true)
+	if err != nil {
+		return Sticker{}, err
 	}
-	return t.videoSticker(ctx, in, dir, info, fit)
+	if !info.Animated() {
+		return t.staticSticker(ctx, in, dir, info, plan, opts.Quality)
+	}
+	return t.videoSticker(ctx, in, dir, info, plan, opts)
 }
 
 // input 是读 in 的参数。ffmpeg 自带的 VP8/VP9 解码器会丢掉透明通道，带透明的 WEBM 要用 libvpx 解码。
@@ -210,36 +215,38 @@ func input(in string, info Info) []string {
 	return []string{"-i", in}
 }
 
-func (t Tool) videoSticker(ctx context.Context, in, dir string, info Info, fit string) (Sticker, error) {
+func (t Tool) videoSticker(ctx context.Context, in, dir string, info Info, plan mediaPlan, opts api.Upload) (Sticker, error) {
 	out := filepath.Join(dir, "sticker.webm")
-	pre := []string{}
-	srcFPS := info.FPS
-	args := []string{}
-	if info.Duration > MaxVideoSeconds {
-		if fit == "trim" {
-			args = append(args, "-t", fmtFloat(videoTargetSecs))
-		} else {
-			factor := videoTargetSecs / info.Duration
-			pre = append(pre, "setpts=PTS*"+fmtFloat(factor))
-			if srcFPS > 0 {
-				srcFPS /= factor
-			}
+	srcFPS, outputDuration := info.FPS, plan.duration
+	baseVF := strings.Join(plan.filters, ",")
+	if plan.duration > MaxVideoSeconds {
+		outputDuration = videoTargetSecs
+		if opts.Fit != api.FitTrim {
+			factor := videoTargetSecs / plan.duration
+			baseVF += ",setpts=PTS*" + number(factor)
+			srcFPS /= factor
 		}
 	}
+	maxFPS := float64(MaxVideoFPS)
+	if opts.FPS > 0 {
+		maxFPS = float64(opts.FPS)
+	}
+	firstCRF := stickerCRF(opts.Quality)
+	// 高画质多试一次；后续编码始终只会降低帧率/画质以满足 Telegram 文件限制。
 	var lastSize int64
-	for _, a := range videoAttempts {
-		filters := append([]string{}, pre...)
-		// 只在超过上限时降帧率；低帧率的动图补帧到 30 只会让文件变大
-		if srcFPS <= 0 || srcFPS > a.maxFPS {
-			filters = append(filters, "fps="+fmtFloat(a.maxFPS))
+	for _, attempt := range videoAttempts {
+		if attempt.crf < firstCRF {
+			continue
 		}
-		filters = append(filters, stickerScale, "format=yuva420p")
-		cmd := input(in, info)
-		cmd = append(cmd, args...)
-		cmd = append(cmd, "-an", "-sn", "-map_metadata", "-1", "-vf", strings.Join(filters, ","),
-			"-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", strconv.Itoa(a.crf),
-			"-deadline", "good", "-cpu-used", "2", "-row-mt", "1", "-auto-alt-ref", "0",
-			"-f", "webm", out)
+		fps := min(maxFPS, attempt.maxFPS)
+		vf := baseVF
+		if srcFPS <= 0 || srcFPS > fps {
+			vf += ",fps=" + number(fps)
+		}
+		vf += ",format=yuva420p"
+		cmd := append(input(in, info), "-t", number(outputDuration), "-an", "-sn", "-map_metadata", "-1", "-vf", vf,
+			"-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", strconv.Itoa(attempt.crf),
+			"-deadline", "good", "-cpu-used", "2", "-row-mt", "1", "-auto-alt-ref", "0", "-f", "webm", out)
 		if err := t.run(ctx, cmd...); err != nil {
 			return Sticker{}, err
 		}
@@ -251,22 +258,33 @@ func (t Tool) videoSticker(ctx context.Context, in, dir string, info Info, fit s
 			return Sticker{Path: out, Mime: "video/webm", Name: "sticker.webm"}, nil
 		}
 	}
-	return Sticker{}, fmt.Errorf("压到最低画质还有 %d KB，超过视频贴纸 256 KB 的上限。动图太长或画面太复杂，先裁短一些再试", lastSize>>10)
+	return Sticker{}, fmt.Errorf("压缩后还有 %d KB，超过视频贴纸 256 KB 上限，请缩短所选时段或减少画面细节", lastSize>>10)
 }
 
-func (t Tool) staticSticker(ctx context.Context, in, dir string, info Info) (Sticker, error) {
+func (t Tool) staticSticker(ctx context.Context, in, dir string, info Info, plan mediaPlan, quality string) (Sticker, error) {
 	png := filepath.Join(dir, "sticker.png")
-	if err := t.run(ctx, append(input(in, info), "-frames:v", "1", "-map_metadata", "-1", "-vf", stickerScale+",format=rgba",
+	vf := strings.Join(plan.filters, ",") + ",format=rgba"
+	if err := t.run(ctx, append(input(in, info), "-frames:v", "1", "-map_metadata", "-1", "-vf", vf,
 		"-compression_level", "100", png)...); err != nil {
 		return Sticker{}, err
 	}
-	if st, err := os.Stat(png); err == nil && st.Size() <= MaxStaticBytes {
+	fi, err := os.Stat(png)
+	if err != nil {
+		return Sticker{}, err
+	}
+	if fi.Size() <= MaxStaticBytes && quality != "small" {
 		return Sticker{Path: png, Mime: "image/png", Name: "sticker.png"}, nil
 	}
-	// 照片一类的图片 PNG 太大，换成有损 WEBP
 	webp := filepath.Join(dir, "sticker.webp")
-	for _, q := range []int{90, 75, 60} {
-		if err := t.run(ctx, "-i", png, "-c:v", "libwebp", "-quality", strconv.Itoa(q), webp); err != nil {
+	q := 90
+	if quality == "high" {
+		q = 95
+	}
+	if quality == "small" {
+		q = 65
+	}
+	for _, value := range []int{q, 60, 40} {
+		if err := t.run(ctx, "-i", png, "-c:v", "libwebp", "-quality", strconv.Itoa(value), webp); err != nil {
 			return Sticker{}, err
 		}
 		if st, err := os.Stat(webp); err == nil && st.Size() <= MaxStaticBytes {
@@ -283,8 +301,8 @@ type GIF struct {
 	Duration float64
 }
 
-// GIF 把 in 转换成 Telegram 的 GIF：无声 H.264 MP4，长边不超过 1280
-func (t Tool) GIF(ctx context.Context, in, dir string) (GIF, error) {
+// GIF 把所选时段转换为无声 H.264 MP4；不受视频贴纸三秒限制，自动尺寸长边不超过 1280。
+func (t Tool) GIF(ctx context.Context, in, dir string, opts api.MediaOptions) (GIF, error) {
 	info, err := t.Probe(ctx, in)
 	if err != nil {
 		return GIF{}, err
@@ -292,20 +310,36 @@ func (t Tool) GIF(ctx context.Context, in, dir string) (GIF, error) {
 	if !info.Animated() {
 		return GIF{}, errors.New("这是一张静态图片，GIF 收藏只收动图")
 	}
-	w, h := evenFit(info.W, info.H, gifMaxSide)
+	plan, err := planMedia(info, opts, false)
+	if err != nil {
+		return GIF{}, err
+	}
 	out := filepath.Join(dir, "animation.mp4")
-	vf := fmt.Sprintf("scale=%d:%d:flags=lanczos,format=yuv420p", w, h)
-	for _, crf := range []int{23, 28, 33} {
-		if err := t.run(ctx, "-i", in, "-an", "-sn", "-map_metadata", "-1", "-vf", vf,
+	vf := strings.Join(plan.filters, ",")
+	fps := 60
+	if opts.FPS > 0 {
+		fps = opts.FPS
+	}
+	if info.FPS <= 0 || info.FPS > float64(fps) {
+		vf += ",fps=" + strconv.Itoa(fps)
+	}
+	vf += ",format=yuv420p"
+	for _, crf := range gifCRFs(opts.Quality) {
+		if err := t.run(ctx, append(input(in, info), "-t", number(plan.duration), "-an", "-sn", "-map_metadata", "-1", "-vf", vf,
 			"-c:v", "libx264", "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p",
-			"-movflags", "+faststart", "-f", "mp4", out); err != nil {
+			"-movflags", "+faststart", "-f", "mp4", out)...); err != nil {
 			return GIF{}, err
 		}
 		if st, err := os.Stat(out); err == nil && st.Size() <= gifSmallFileSize {
 			break
 		}
 	}
-	return GIF{Path: out, W: w, H: h, Duration: info.Duration}, nil
+	// 上传的宽高和时长必须与实际编码结果一致（帧率取整可能使时长略有变化）。
+	actual, err := t.Probe(ctx, out)
+	if err != nil {
+		return GIF{}, err
+	}
+	return GIF{Path: out, W: actual.W, H: actual.H, Duration: actual.Duration}, nil
 }
 
 // evenFit 把 w×h 等比缩到长边不超过 side，并取偶数

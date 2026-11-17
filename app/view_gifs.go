@@ -8,7 +8,7 @@ import (
 
 func (a *app) gifsView(c *ui.Context) {
 	t := c.Theme()
-	a.pageHeader(c, pageGIFs, "Telegram 里「GIF」标签页收藏的动图。加进来的动图会转换成 Telegram 用的无声 MP4。", func() {
+	a.pageHeader(c, pageGIFs, "Telegram「GIF」标签页的收藏。超过 3 秒也保留完整时长，云端转换为无声 MP4。", func() {
 		iconButton(c, "refresh-gifs", "刷新", iconRefresh, false).Disabled(a.gifsBusy).OnClick(a.loadGIFs)
 		if a.selectedGIF != 0 {
 			id := a.selectedGIF
@@ -21,12 +21,13 @@ func (a *app) gifsView(c *ui.Context) {
 		a.enqueue(files, "")
 	}
 	zone.Children(func() {
-		drop := panel(c).Padding(16)
+		drop := panel(c).Padding(16).Gap(12)
 		if zone.FileDragOver() {
 			drop.Border(2, t.Accent).Background(t.Accent.Alpha(0.06))
 		}
 		drop.Children(func() {
 			muted(c, "把动图拖到这一页的任何地方就能加进收藏。点一个选中，再点「从收藏移除」。").FontSize(13)
+			a.mediaFields(c, &a.gifMedia, true, false)
 		})
 		errorText(c, a.gifsErr)
 		if a.gifsBusy && !a.gifsLoaded {

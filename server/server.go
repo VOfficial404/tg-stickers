@@ -205,7 +205,11 @@ func (s *Server) Handler() http.Handler {
 			if form["title"] == "" || form["short_name"] == "" {
 				return badRequest("请填写贴纸包名字和链接名")
 			}
-			st, tmp, err := s.sticker(r.Context(), path, form["fit"])
+			opts, err := mediaOptions(form, true)
+			if err != nil {
+				return err
+			}
+			st, tmp, err := s.sticker(r.Context(), path, opts)
 			if err != nil {
 				return err
 			}
@@ -231,7 +235,11 @@ func (s *Server) Handler() http.Handler {
 	auth("POST /api/sets/{name}/stickers", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var out api.Set
 		err := s.withUpload(w, r, func(path string, form map[string]string) error {
-			st, tmp, err := s.sticker(r.Context(), path, form["fit"])
+			opts, err := mediaOptions(form, true)
+			if err != nil {
+				return err
+			}
+			st, tmp, err := s.sticker(r.Context(), path, opts)
 			if err != nil {
 				return err
 			}
@@ -276,7 +284,11 @@ func (s *Server) Handler() http.Handler {
 	auth("GET /api/gifs", func(w http.ResponseWriter, r *http.Request) (any, error) { return s.acc.GIFs(r.Context()) })
 	auth("POST /api/gifs", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var out []api.GIF
-		err := s.withUpload(w, r, func(path string, _ map[string]string) error {
+		err := s.withUpload(w, r, func(path string, form map[string]string) error {
+			opts, err := mediaOptions(form, false)
+			if err != nil {
+				return err
+			}
 			ff, err := s.ffmpeg()
 			if err != nil {
 				return err
@@ -287,7 +299,7 @@ func (s *Server) Handler() http.Handler {
 			}
 			defer os.RemoveAll(tmp)
 			release := s.slot(r.Context())
-			g, err := ff.GIF(r.Context(), path, tmp)
+			g, err := ff.GIF(r.Context(), path, tmp, opts.MediaOptions)
 			release()
 			if err != nil {
 				return badRequest(err.Error())
@@ -346,7 +358,7 @@ func (s *Server) slot(ctx context.Context) func() {
 }
 
 // sticker 把上传的文件转换成贴纸，返回转换结果和要删掉的临时目录
-func (s *Server) sticker(ctx context.Context, path, fit string) (convert.Sticker, string, error) {
+func (s *Server) sticker(ctx context.Context, path string, opts api.Upload) (convert.Sticker, string, error) {
 	ff, err := s.ffmpeg()
 	if err != nil {
 		return convert.Sticker{}, "", err
@@ -361,7 +373,7 @@ func (s *Server) sticker(ctx context.Context, path, fit string) (convert.Sticker
 		os.RemoveAll(tmp)
 		return convert.Sticker{}, "", err
 	}
-	st, err := ff.Sticker(ctx, path, tmp, fit)
+	st, err := ff.Sticker(ctx, path, tmp, opts)
 	if err != nil {
 		os.RemoveAll(tmp)
 		return convert.Sticker{}, "", badRequest(err.Error())

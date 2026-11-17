@@ -127,6 +127,7 @@ type Upload struct {
 	Emoji string
 	// Fit 是动图超过 3 秒时怎么办，见 Fit* 常量
 	Fit string
+	MediaOptions
 }
 
 // 动图超过视频贴纸 3 秒上限时的处理方式
@@ -134,6 +135,17 @@ const (
 	FitSpeed = "speed" // 加速到 3 秒，整段动图都留着
 	FitTrim  = "trim"  // 只取前 3 秒
 )
+
+// MediaOptions 在服务器上剪辑和缩放原文件。零值保留完整时段并使用自动尺寸、帧率和标准画质。
+type MediaOptions struct {
+	Start   float64 // 开始秒数，0 表示从头
+	End     float64 // 结束秒数，0 表示直到原文件结尾
+	Width   int     // 目标画布尺寸；宽高同时为 0 表示自动
+	Height  int
+	Resize  string // contain 等比缩放、pad 补边、crop 居中裁剪
+	FPS     int    // 帧率上限，0 表示自动
+	Quality string // standard、high、small
+}
 
 // SetPatch 修改贴纸包；只改不为空的字段
 type SetPatch struct {

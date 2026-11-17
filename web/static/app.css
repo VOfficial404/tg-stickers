@@ -95,6 +95,11 @@ nav { display: flex; flex-direction: column; gap: 8px; }
 .upload-options { display: flex; gap: 18px; flex-wrap: wrap; }
 .upload-options .field:first-child { width: 190px; }
 .upload-options .field { flex: 0 1 255px; }
+.media-settings { align-self: stretch; text-align: left; color: var(--fg); border-top: 1px solid var(--line); padding-top: 14px; }
+.media-settings > summary { font-weight: 600; color: var(--accent); }
+.media-settings > p { margin: 10px 0; }
+.media-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px 18px; margin: 12px 0; }
+.media-grid > [hidden] { display: none; }
 .file-input { display: none; }
 .selection-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: var(--accent-soft); padding: 13px; border-radius: 10px; }
 .selection-bar strong { margin-right: 6px; font-size: 13px; }
@@ -121,6 +126,7 @@ nav { display: flex; flex-direction: column; gap: 8px; }
 .queue-list { padding: 0; margin: 10px 0 0; list-style: none; }
 .queue-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12px; }
 .queue-list li strong { font-weight: 500; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-list li .job-media { color: var(--fg); }
 .queue-list button { font-size: 12px; padding: 4px 8px; }
 .job-status { min-width: 44px; color: var(--muted); }
 .job-status.running { color: var(--accent); }
@@ -132,6 +138,7 @@ dialog::backdrop { background: #10263b66; }
 dialog > p { margin: 16px 0; }
 dialog .actions { justify-content: flex-end; margin-top: 20px; }
 dialog .upload-options .field { width: auto; flex: 1 1 180px; }
+dialog .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #notices { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 10; pointer-events: none; width: max-content; max-width: calc(100% - 32px); }
 .notice { background: var(--fg); color: var(--surface); padding: 12px 20px; border-radius: 10px; font-size: 14px; box-shadow: 0 6px 28px #0002; overflow-wrap: anywhere; }
 .working::before { content: ''; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); display: inline-block; vertical-align: -2px; border-radius: 50%; margin-right: 9px; animation: spin 1s linear infinite; }
@@ -146,6 +153,7 @@ dialog .upload-options .field { width: auto; flex: 1 1 180px; }
   .workspace { grid-template-columns: 210px minmax(0, 1fr); }
   .sidebar { width: 210px; padding: 24px 16px; }
   .queue { left: 210px; }
+  .media-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .pack-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
 }
 @media (max-width: 680px) {
@@ -172,6 +180,7 @@ dialog .upload-options .field { width: auto; flex: 1 1 180px; }
   .upload-heading { flex-direction: column; align-items: flex-start; gap: 12px; }
   .upload-options { gap: 12px; }
   .upload-options .field, .upload-options .field:first-child { flex: 1 1 150px; width: auto; }
+  .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .sticker-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .sticker-caption { gap: 4px; }
   .sticker-caption > span { font-size: 13px; }
@@ -180,6 +189,9 @@ dialog .upload-options .field { width: auto; flex: 1 1 180px; }
   .queue-header { gap: 8px; }
   .queue-header > .hint { display: none; }
   dialog { padding: 20px; }
+}
+@media (max-width: 400px) {
+  .media-grid, dialog .media-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
 .qr-picture { display: grid; place-items: center; min-height: 260px; border-radius: 10px; background: #fff; color: #172c3d; padding: 12px; }

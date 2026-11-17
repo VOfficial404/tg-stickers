@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/VOfficial404/tg-stickers/api"
 )
 
 func tool(t *testing.T) Tool {
@@ -46,7 +48,7 @@ func TestVideoStickerMeetsTelegramLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			in := makeGIF(t, ff, dir, tc.w, tc.h, tc.secs)
-			st, err := ff.Sticker(ctx, in, dir, tc.fit)
+			st, err := ff.Sticker(ctx, in, dir, api.Upload{Fit: tc.fit})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +89,7 @@ func TestStaticSticker(t *testing.T) {
 	if err := ff.run(context.Background(), "-f", "lavfi", "-i", "testsrc2=size=300x200", "-frames:v", "1", in); err != nil {
 		t.Fatal(err)
 	}
-	st, err := ff.Sticker(context.Background(), in, dir, "")
+	st, err := ff.Sticker(context.Background(), in, dir, api.Upload{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +107,7 @@ func TestGIFIsSilentMP4(t *testing.T) {
 	ff := tool(t)
 	dir := t.TempDir()
 	in := makeGIF(t, ff, dir, 1600, 900, 1)
-	g, err := ff.GIF(context.Background(), in, dir)
+	g, err := ff.GIF(context.Background(), in, dir, api.MediaOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

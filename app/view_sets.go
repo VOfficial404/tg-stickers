@@ -125,7 +125,7 @@ func (a *app) setView(c *ui.Context) {
 	a.stickerGrid(c, s)
 }
 
-// uploadPanel 是添加贴纸的地方：选文件或者拖进来，上面是这一批的表情和超过 3 秒时的处理
+// uploadPanel 是添加贴纸的地方，选项在选择或拖入文件时保存到上传队列。
 func (a *app) uploadPanel(c *ui.Context, target string, enabled bool) {
 	t := c.Theme()
 	zone := panel(c).Gap(12)
@@ -158,6 +158,7 @@ func (a *app) uploadOptions(c *ui.Context, enabled bool) {
 			}
 		})
 	})
+	a.mediaFields(c, &a.media, enabled, true)
 }
 
 // selectionBar 是选中一张贴纸后出现的操作条
@@ -252,64 +253,66 @@ func (a *app) stickerGrid(c *ui.Context, s *api.Set) {
 func (a *app) createDialog(c *ui.Context) {
 	f := &a.create
 	ui.Modal(c, &f.open, func() {
-		ui.Column(c).Width(min(480, a.width-64)).Gap(14).Padding(8).Children(func() {
-			ui.Text(c, "新建贴纸包").Bold().FontSize(20)
-			ui.Field(c, "名字（别人添加时看到的）", func() {
-				ui.TextInput(c.Key("create-title"), &f.title).Placeholder("我的表情").MaxLength(64).Disabled(f.busy)
-			})
-			ui.Field(c, "链接名（t.me/addstickers/后面那段，创建后不能改）", func() {
-				ui.Row(c).Gap(8).Children(func() {
-					in := ui.TextInput(c.Key("create-short"), &f.shortName).Placeholder("my_stickers").MaxLength(64).Grow(1).Disabled(f.busy)
-					if in.Changed() {
-						f.shortOK, f.shortReason, f.checkedAs = nil, "", ""
-					}
-					ui.Button(c.Key("check-short"), "检查").Disabled(f.busy || f.checking || f.shortName == "").OnClick(a.checkShortName)
+		ui.Scroll(c.Key("create-scroll")).Width(min(560, a.width-64)).MaxHeight(560).Children(func() {
+			ui.Column(c).FillWidth().Gap(14).Padding(8).Children(func() {
+				ui.Text(c, "新建贴纸包").Bold().FontSize(20)
+				ui.Field(c, "名字（别人添加时看到的）", func() {
+					ui.TextInput(c.Key("create-title"), &f.title).Placeholder("我的表情").MaxLength(64).Disabled(f.busy)
 				})
-			})
-			switch {
-			case f.checking:
-				muted(c, "正在检查…").FontSize(12)
-			case f.shortOK != nil && *f.shortOK:
-				ui.Text(c, "可以用").TextColor(c.Theme().Success).FontSize(12)
-			case f.shortOK != nil:
-				ui.Text(c, f.shortReason).TextColor(c.Theme().Danger).FontSize(12)
-			default:
-				muted(c, "只能用英文字母、数字和下划线，以字母开头。").FontSize(12)
-			}
-			a.uploadOptions(c, !f.busy)
-			ui.Row(c).Gap(8).Children(func() {
-				ui.Button(c.Key("create-pick"), "选择文件").Disabled(f.busy).OnClick(a.pickCreateFiles)
-				if len(f.files) > 0 {
-					ui.Button(c.Key("create-clear"), "清空").Disabled(f.busy).OnClick(func() { f.files = nil })
+				ui.Field(c, "链接名（t.me/addstickers/后面那段，创建后不能改）", func() {
+					ui.Row(c).Gap(8).Children(func() {
+						in := ui.TextInput(c.Key("create-short"), &f.shortName).Placeholder("my_stickers").MaxLength(64).Grow(1).Disabled(f.busy)
+						if in.Changed() {
+							f.shortOK, f.shortReason, f.checkedAs = nil, "", ""
+						}
+						ui.Button(c.Key("check-short"), "检查").Disabled(f.busy || f.checking || f.shortName == "").OnClick(a.checkShortName)
+					})
+				})
+				switch {
+				case f.checking:
+					muted(c, "正在检查…").FontSize(12)
+				case f.shortOK != nil && *f.shortOK:
+					ui.Text(c, "可以用").TextColor(c.Theme().Success).FontSize(12)
+				case f.shortOK != nil:
+					ui.Text(c, f.shortReason).TextColor(c.Theme().Danger).FontSize(12)
+				default:
+					muted(c, "只能用英文字母、数字和下划线，以字母开头。").FontSize(12)
 				}
-			})
-			zone := ui.Column(c).Gap(4).Padding(10).Radius(10).Border(1, c.Theme().Border).MinHeight(64)
-			if files := zone.DroppedFiles(); files != nil && !f.busy {
-				f.files = append(f.files, a.checkFiles(files)...)
-			}
-			if zone.FileDragOver() {
-				zone.Border(2, c.Theme().Accent)
-			}
-			zone.Children(func() {
-				if len(f.files) == 0 {
-					muted(c, "把图片或动图拖到这里。第一张用来创建贴纸包，其余的创建后自动加进去。").FontSize(12)
-				}
-				for i, p := range f.files {
-					label := filepath.Base(p)
-					if i == 0 {
-						label += "（第一张）"
+				a.uploadOptions(c, !f.busy)
+				ui.Row(c).Gap(8).Children(func() {
+					ui.Button(c.Key("create-pick"), "选择文件").Disabled(f.busy).OnClick(a.pickCreateFiles)
+					if len(f.files) > 0 {
+						ui.Button(c.Key("create-clear"), "清空").Disabled(f.busy).OnClick(func() { f.files = nil })
 					}
-					ui.Text(c, label).FontSize(12).SingleLine().Ellipsis("…")
+				})
+				zone := ui.Column(c).Gap(4).Padding(10).Radius(10).Border(1, c.Theme().Border).MinHeight(64)
+				if files := zone.DroppedFiles(); files != nil && !f.busy {
+					f.files = append(f.files, a.checkFiles(files)...)
 				}
-			})
-			errorText(c, f.err)
-			ui.Row(c).Gap(8).Children(func() {
-				ui.PrimaryButton(c.Key("create-ok"), "创建").Disabled(f.busy).OnClick(a.submitCreate)
-				ui.Button(c.Key("create-cancel"), "取消").Disabled(f.busy).OnClick(func() { f.open = false })
-				if f.busy {
-					ui.Spinner(c)
-					muted(c, "正在转换并上传第一张…").FontSize(12)
+				if zone.FileDragOver() {
+					zone.Border(2, c.Theme().Accent)
 				}
+				zone.Children(func() {
+					if len(f.files) == 0 {
+						muted(c, "把图片或动图拖到这里。第一张用来创建贴纸包，其余的创建后自动加进去。").FontSize(12)
+					}
+					for i, p := range f.files {
+						label := filepath.Base(p)
+						if i == 0 {
+							label += "（第一张）"
+						}
+						ui.Text(c, label).FontSize(12).SingleLine().Ellipsis("…")
+					}
+				})
+				errorText(c, f.err)
+				ui.Row(c).Gap(8).Children(func() {
+					ui.PrimaryButton(c.Key("create-ok"), "创建").Disabled(f.busy).OnClick(a.submitCreate)
+					ui.Button(c.Key("create-cancel"), "取消").Disabled(f.busy).OnClick(func() { f.open = false })
+					if f.busy {
+						ui.Spinner(c)
+						muted(c, "正在转换并上传第一张…").FontSize(12)
+					}
+				})
 			})
 		})
 	})

@@ -1,5 +1,6 @@
 import { Client } from './api.js';
 import { codeDelivery, resendStatus } from './login.js';
+import { GIF_SIZES, QUALITIES, RESIZE_MODES, STICKER_SIZES, appendMedia, defaultMedia, describeMedia, snapshotMedia } from './media.js';
 
 const root = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -7,7 +8,8 @@ const notices = document.querySelector('#notices');
 let client = null, state = null, page = 'sets', pack = null, selected = null;
 let sets = [], gifs = [], queue = [], pumping = false, loading = false;
 let poll = null, epoch = 0, thumbActive = 0, thumbQueue = [];
-const options = { emoji: '🙂', fit: 'speed' };
+// 上传区表单的当前值（原始字符串）。排队时另存校验后的快照，之后修改这里不影响已排队文件。
+const media = { sticker: defaultMedia('sticker'), gif: defaultMedia('gif') }, mediaOpen = { sticker: false, gif: false };
 let loginBusy = false, qrImageURL = '', qrImageKey = '', qrPendingKey = '';
 
 function el(tag, attrs = {}, ...children) {
@@ -295,29 +297,64 @@ function renderSets() {
     return card;
   })));
 }
-function fileOptions(includeEmoji = true) {
+function fileOptions(kind) {
+  const raw = media[kind], gif = kind === 'gif';
+  const bind = (field, key) => {
+    const control = field.querySelector('input,select');
+    control.addEventListener(control.tagName === 'SELECT' ? 'change' : 'input', e => { raw[key] = e.target.value; });
+    return field;
+  };
+  const decimal = (value, placeholder) => ({ value, placeholder, inputMode: 'decimal', autocomplete: 'off' });
   const group = el('div', { class: 'upload-options' });
-  if (includeEmoji) {
-    const emoji = input('emoji', '这批贴纸的表情', { value: options.emoji, placeholder: '🙂', maxLength: 32 });
-    emoji.querySelector('input').addEventListener('input', e => { options.emoji = e.target.value; }); group.append(emoji);
-  }
-  const fit = select('fit', '超过 3 秒的动图', [['speed', '加速到 3 秒，保留整段'], ['trim', '只取前 3 秒']], options.fit);
-  fit.querySelector('select').addEventListener('change', e => { options.fit = e.target.value; });
-  group.append(fit); return group;
+  if (!gif) group.append(bind(input('emoji', '这批贴纸的表情', { value: raw.emoji, placeholder: '🙂', maxLength: 32 }), 'emoji'),
+    bind(select('fit', '截取后仍超过 3 秒', [['speed', '加速到 3 秒，保留所选时段'], ['trim', '只保留前 3 秒']], raw.fit), 'fit'));
+  const width = bind(input('width', '宽度（像素）', decimal(raw.width, gif ? '2–2048 偶数' : '≤512 偶数')), 'width');
+  const height = bind(input('height', '高度（像素）', decimal(raw.height, gif ? '2–2048 偶数' : '≤512 偶数')), 'height');
+  width.hidden = height.hidden = raw.size !== 'custom';
+  const size = bind(select('size', '输出尺寸', gif ? GIF_SIZES : STICKER_SIZES, raw.size), 'size');
+  size.querySelector('select').addEventListener('change', e => { width.hidden = height.hidden = e.target.value !== 'custom'; });
+  const details = el('details', { class: 'media-settings', open: mediaOpen[kind], ontoggle: () => { mediaOpen[kind] = details.open; } },
+    el('summary', { text: '云端转换设置：截取时段、尺寸、帧率、画质' }),
+    text('p', gif
+      ? 'GIF 收藏不受 3 秒限制：结束秒留空就保留到文件结尾，整段上传。'
+      : 'Telegram 视频贴纸最长 3 秒，无法突破：服务器先截取你填的时段，若仍超过 3 秒，再按“截取后仍超过 3 秒”的选择加速或截断。', 'hint'),
+    el('div', { class: 'media-grid' },
+      bind(input('start', '开始秒', decimal(raw.start, '0')), 'start'),
+      bind(input('end', '结束秒', decimal(raw.end, '留空 = 到结尾')), 'end'),
+      size, width, height,
+      bind(select('resize', '缩放方式', RESIZE_MODES, raw.resize), 'resize'),
+      bind(input('fps', '帧率上限', decimal(raw.fps, `留空 = 自动，最高 ${gif ? 60 : 30}`)), 'fps'),
+      bind(select('quality', '画质', QUALITIES, raw.quality), 'quality')),
+    text('p', gif
+      ? '自动尺寸最长边 1280，小图不放大。补边用黑色填满画布，裁剪从中心截取。时段不能超出原文件时长。'
+      : '贴纸较长的一边必须是 512。补边用透明填满画布，裁剪从中心截取；选等比缩放而原图比例无法达到 512 长边时，服务器会拒绝，请改用补边或裁剪。时段不能超出原文件时长。', 'hint'),
+    text('p', '选择文件时会保存这份设置，服务器在上传时完成转换。之后修改设置只影响新加入的文件。', 'hint'));
+  return [group.childElementCount ? group : null, details];
+}
+// 选中文件时校验并快照转换设置；不合法就展开设置并说明原因。
+function takeMedia(kind, error, details) {
+  try { const snap = snapshotMedia(kind, media[kind]); error.textContent = ''; return snap; }
+  catch (err) { error.textContent = err.message; if (details) details.open = true; notify(err.message); return null; }
 }
 function uploadZone(target) {
-  const gif = target === '';
+  const gif = target === '', kind = gif ? 'gif' : 'sticker';
   const picker = el('input', { type: 'file', multiple: true, class: 'file-input', accept: gif ? '.gif,.webp,.webm,.mp4,.mov' : '.gif,.png,.jpg,.jpeg,.webp,.webm,.mp4,.mov', 'aria-label': gif ? '选择动图' : '选择贴纸文件' });
+  const error = text('p', '', 'error'); error.role = 'alert';
   const zone = el('section', { class: 'upload-zone', 'aria-label': '文件上传' },
     el('div', { class: 'upload-heading' }, el('div', {}, text('h2', gif ? '添加到 GIF 收藏' : '添加贴纸'),
-      text('p', gif ? '拖入动图，自动转换并存进 Telegram 的 GIF 收藏。' : '拖入图片或 GIF，自动转换成合适的贴纸格式。支持一次选择多个文件。', 'muted')),
+      text('p', gif ? '拖入动图，上传时由服务器转换并存进 Telegram 的 GIF 收藏。默认保留整段，不受贴纸的 3 秒限制。' : '拖入图片或 GIF，上传时由服务器转换成合适的贴纸格式。支持一次选择多个文件。', 'muted')),
       button('选择文件', () => picker.click(), 'primary', !state.ffmpeg)),
-    gif ? null : fileOptions(), picker,
+    fileOptions(kind), error, picker,
     text('p', '单个文件最大 50 MB。上传与转换过程中请保持本页打开。', 'hint'));
-  picker.addEventListener('change', () => { enqueue([...picker.files], target); picker.value = ''; });
+  const take = files => {
+    if (!files.length) return;
+    const snap = takeMedia(kind, error, zone.querySelector('details'));
+    if (snap) enqueue(files, target, snap);
+  };
+  picker.addEventListener('change', () => { take([...picker.files]); picker.value = ''; });
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragging'); });
   zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('dragging'); });
-  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('dragging'); enqueue([...e.dataTransfer.files], target); });
+  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('dragging'); take([...e.dataTransfer.files]); });
   return zone;
 }
 function renderPack() {
@@ -467,19 +504,20 @@ function createPack() {
   const form = el('form', { class: 'form-stack', onsubmit: event => {
     event.preventDefault(); const data = new FormData(form); const valid = validateFiles(files);
     if (!valid.length || valid.length !== files.length) return;
+    // 第一张和其余文件共用提交时的同一份设置快照。
+    const snap = takeMedia('sticker', error, form.querySelector('details')); if (!snap) return;
     busyForm(form, true);
     const c = client, gen = epoch, first = valid[0], rest = valid.slice(1);
-    const uploadOptions = { emoji: options.emoji, fit: options.fit };
-    const body = new FormData(); body.set('title', data.get('title')); body.set('short_name', data.get('short_name'));
-    body.set('emoji', uploadOptions.emoji); body.set('fit', uploadOptions.fit); body.set('file', first);
+    const body = appendMedia(new FormData(), snap); body.set('title', data.get('title')); body.set('short_name', data.get('short_name'));
+    body.set('file', first);
     fileList.textContent = '正在转换并上传第一张贴纸，请保持本页打开…';
     void run(async () => {
       const result = await c.request('/sets', 'POST', body); if (gen !== epoch) return;
       pack = result; selected = null; page = 'sets'; sets.unshift(result); modal.close(); renderShell(); renderPack();
-      enqueue(rest, result.short_name, uploadOptions); notify('贴纸包已创建');
+      enqueue(rest, result.short_name, snap); notify('贴纸包已创建');
     }, error).finally(() => { busyForm(form, false); fileList.textContent = files.map(f => f.name).join('、'); });
   } }, input('title', '贴纸包名字', { required: true, maxLength: 64, placeholder: '我的表情' }), short, check, checkResult,
-    fileOptions(), inputFileLabel(picker), fileList, error, el('button', { type: 'submit', class: 'primary', text: '创建贴纸包' }));
+    fileOptions('sticker'), inputFileLabel(picker), fileList, error, el('button', { type: 'submit', class: 'primary', text: '创建贴纸包' }));
   openModal('新建贴纸包', [form]);
 }
 function inputFileLabel(picker) { return el('label', { class: 'field' }, text('span', '图片或动图（可多选）'), picker); }
@@ -492,9 +530,9 @@ function validateFiles(files) {
     return true;
   });
 }
-function enqueue(files, target, uploadOptions = options) {
+function enqueue(files, target, snap) {
   if (!state?.ffmpeg) { notify('服务器未找到 ffmpeg，无法转换文件。'); return; }
-  for (const file of validateFiles(files)) queue.push({ file, target, emoji: uploadOptions.emoji, fit: uploadOptions.fit, status: 'waiting', error: '' });
+  for (const file of validateFiles(files)) queue.push({ file, target, media: snap, status: 'waiting', error: '' });
   renderQueue(); void pump();
 }
 async function pump() {
@@ -505,7 +543,7 @@ async function pump() {
     for (let job; (job = queue.find(j => j.status === 'waiting'));) {
       if (gen !== epoch || state?.step !== 'ready') break;
       job.status = 'running'; renderQueue();
-      const body = new FormData(); body.set('emoji', job.emoji); body.set('fit', job.fit); body.set('file', job.file);
+      const body = appendMedia(new FormData(), job.media); body.set('file', job.file);
       try {
         const result = await c.request(job.target ? `/sets/${encodeURIComponent(job.target)}/stickers` : '/gifs', 'POST', body);
         if (gen !== epoch) return;
@@ -536,7 +574,7 @@ function renderQueue() {
     el('ul', { class: 'queue-list' }, queue.map(job => {
       const status = { waiting: '等待中', running: '正在上传 / 转换', done: '已完成', failed: '失败' }[job.status];
       return el('li', {}, el('span', { class: `job-status ${job.status}`, text: status }),
-        text('strong', job.file?.name || job.name), text('span', job.target || 'GIF 收藏', 'hint'),
+        text('strong', job.file?.name || job.name), text('span', job.target || 'GIF 收藏', 'hint'), text('span', describeMedia(job.media), 'hint job-media'),
         job.error ? text('span', job.error, 'error') : null,
         job.status === 'failed' ? button('重试', () => { job.status = 'waiting'; job.error = ''; void pump(); renderQueue(); }, 'quiet') : null,
         job.status === 'waiting' || job.status === 'failed' ? button('移出队列', () => { queue = queue.filter(j => j !== job); renderQueue(); }, 'quiet') : null);

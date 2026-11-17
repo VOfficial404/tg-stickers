@@ -244,8 +244,19 @@ func (c *Client) CheckShortName(ctx context.Context, name string) (r ShortNameCh
 	return r, err
 }
 
+func mediaFields(m MediaOptions) map[string]string {
+	return map[string]string{
+		"start": strconv.FormatFloat(m.Start, 'f', -1, 64),
+		"end":   strconv.FormatFloat(m.End, 'f', -1, 64),
+		"width": strconv.Itoa(m.Width), "height": strconv.Itoa(m.Height),
+		"resize": m.Resize, "fps": strconv.Itoa(m.FPS), "quality": m.Quality,
+	}
+}
+
 func uploadFields(u Upload) map[string]string {
-	return map[string]string{"emoji": u.Emoji, "fit": u.Fit}
+	fields := mediaFields(u.MediaOptions)
+	fields["emoji"], fields["fit"] = u.Emoji, u.Fit
+	return fields
 }
 
 // CreateSet 用 file 作为第一张贴纸新建贴纸包
@@ -296,8 +307,8 @@ func (c *Client) GIFs(ctx context.Context) (g []GIF, err error) {
 }
 
 // AddGIF 把 file 转换成 Telegram 的 GIF（无声 MP4）存进「GIF 收藏」
-func (c *Client) AddGIF(ctx context.Context, file string) (g []GIF, err error) {
-	err = c.upload(ctx, "/api/gifs", nil, file, &g)
+func (c *Client) AddGIF(ctx context.Context, file string, opts MediaOptions) (g []GIF, err error) {
+	err = c.upload(ctx, "/api/gifs", mediaFields(opts), file, &g)
 	return g, err
 }
 
