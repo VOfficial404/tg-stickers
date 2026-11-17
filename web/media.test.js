@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { appendMedia, defaultMedia, describeMedia, snapshotMedia } from './static/media.js';
+import { appendMedia, defaultMedia, describeMedia, geometry, snapshotMedia, timing } from './static/media.js';
 
 const fields = media => Object.fromEntries(appendMedia(new FormData(), media).entries());
 
@@ -44,5 +44,52 @@ describe('upload conversion settings', () => {
     expect(() => snapshotMedia('gif', { ...defaultMedia('gif'), size: 'custom', width: '2050', height: '100' })).toThrow('2–2048');
     expect(() => snapshotMedia('gif', { ...defaultMedia('gif'), fps: '61' })).toThrow('不能超过 60');
     expect(() => snapshotMedia('gif', { ...defaultMedia('gif'), fps: '12.5' })).toThrow('整数');
+  });
+});
+
+describe('visual editor geometry matches the server', () => {
+  const media = patch => snapshotMedia(patch.kind ?? 'gif', { ...defaultMedia(patch.kind ?? 'gif'), ...patch });
+
+  test('an off-centre selection is sent and becomes the base of the output', () => {
+    const snap = media({ kind: 'sticker', cropX: '260', cropY: '20', cropW: '120', cropH: '60', size: 'custom', width: '512', height: '256', resize: 'pad' });
+    expect(fields(snap)).toMatchObject({ crop_x: '260', crop_y: '20', crop_w: '120', crop_h: '60' });
+    expect(describeMedia(snap)).toBe('整段 · 选区 120×60 · 512×256 补边');
+    expect(geometry('sticker', { w: 400, h: 100 }, snap)).toMatchObject({ out: { w: 512, h: 256 }, src: { x: 260, y: 20, w: 120, h: 60 }, error: '' });
+  });
+
+  test('without a selection no crop fields are uploaded', () => {
+    expect('crop_w' in fields(media({}))).toBe(false);
+  });
+
+  test('automatic GIF size follows the selection, not the whole frame', () => {
+    expect(geometry('gif', { w: 4000, h: 3000 }, media({ cropX: '100', cropY: '100', cropW: '600', cropH: '300' })).out).toEqual({ w: 600, h: 300 });
+    expect(geometry('gif', { w: 4000, h: 3000 }, media({})).out).toEqual({ w: 1280, h: 960 });
+  });
+
+  test('sticker contain keeps an exact 512 long edge and flags a canvas it cannot fill', () => {
+    expect(geometry('sticker', { w: 98, h: 49 }, media({ kind: 'sticker' })).out).toEqual({ w: 512, h: 256 });
+    expect(geometry('sticker', { w: 100, h: 100 }, media({ kind: 'sticker', size: '512x288' })).error).toContain('长边必须是 512');
+  });
+
+  test('centre crop takes the middle of the selection and fills the canvas', () => {
+    const g = geometry('gif', { w: 400, h: 100 }, media({ size: 'custom', width: '100', height: '100', resize: 'crop' }));
+    expect(g).toMatchObject({ out: { w: 100, h: 100 }, src: { x: 150, y: 0, w: 100, h: 100 }, dst: { x: 0, y: 0, w: 100, h: 100 } });
+  });
+
+  test('pad centres the content inside the canvas', () => {
+    expect(geometry('gif', { w: 400, h: 100 }, media({ size: '640x640', resize: 'pad' })).dst).toEqual({ x: 0, y: 240, w: 640, h: 160 });
+  });
+
+  test('long sticker clips speed up or trim to 3 seconds; GIF keeps its length', () => {
+    expect(timing('gif', 10, media({}))).toMatchObject({ clip: 10, output: 10, rate: 1 });
+    const sped = timing('sticker', 10, media({ kind: 'sticker', start: '2', end: '8' }));
+    expect(sped.output).toBe(2.99);
+    expect(sped.rate).toBeCloseTo(6 / 2.99);
+    expect(timing('sticker', 10, media({ kind: 'sticker', start: '2', fit: 'trim' }))).toMatchObject({ start: 2, end: 4.99, output: 2.99, rate: 1 });
+  });
+
+  test('partial or tiny selections are rejected', () => {
+    expect(() => media({ cropW: '1', cropH: '50' })).toThrow('至少为 2');
+    expect(() => media({ cropW: '50' })).toThrow('至少为 2');
   });
 });

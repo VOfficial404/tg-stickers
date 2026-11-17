@@ -12,7 +12,7 @@ const LIMITS = {
 };
 
 export function defaultMedia(kind) {
-  const base = { start: '', end: '', size: 'auto', width: '', height: '', resize: 'contain', fps: '', quality: 'standard' };
+  const base = { start: '', end: '', size: 'auto', width: '', height: '', resize: 'contain', fps: '', quality: 'standard', cropX: '', cropY: '', cropW: '', cropH: '' };
   return kind === 'sticker' ? { emoji: '🙂', fit: 'speed', ...base } : base;
 }
 
@@ -52,7 +52,7 @@ export function snapshotMedia(kind, raw) {
   if (fps > LIMITS[kind].fps) throw new Error(`${kind === 'sticker' ? '贴纸' : 'GIF'}帧率上限不能超过 ${LIMITS[kind].fps}，现在是 ${fps}。`);
   const quality = raw.quality || 'standard';
   if (!QUALITIES.some(([value]) => value === quality)) throw new Error(`未知的画质选项「${quality}」。`);
-  const media = { kind, start, end, width, height, resize, fps, quality };
+  const media = { kind, start, end, width, height, resize, fps, quality, ...selection(raw) };
   if (kind === 'sticker') {
     if (raw.fit !== 'speed' && raw.fit !== 'trim') throw new Error(`未知的超时处理方式「${raw.fit}」。`);
     media.emoji = String(raw.emoji ?? ''); media.fit = raw.fit;
@@ -60,10 +60,20 @@ export function snapshotMedia(kind, raw) {
   return Object.freeze(media);
 }
 
+// 源画面选区：四个整数，宽高为 0 表示整幅画面。是否超出原画面由编辑器和服务器检查。
+function selection(raw) {
+  const cropX = number(raw.cropX, '选区左边', true), cropY = number(raw.cropY, '选区上边', true);
+  const cropW = number(raw.cropW, '选区宽度', true), cropH = number(raw.cropH, '选区高度', true);
+  if (!cropW && !cropH) return { cropX: 0, cropY: 0, cropW: 0, cropH: 0 };
+  if (cropW < 2 || cropH < 2) throw new Error(`选区宽高至少为 2 像素，现在是 ${cropW} × ${cropH}。`);
+  return { cropX, cropY, cropW, cropH };
+}
+
 // 写入上传请求的字段。GIF 不带 fit，服务器不会把 GIF 收藏截到 3 秒。
 export function appendMedia(body, media) {
   if (media.kind === 'sticker') { body.set('emoji', media.emoji); body.set('fit', media.fit); }
   for (const key of ['start', 'end', 'width', 'height', 'resize', 'fps', 'quality']) body.set(key, String(media[key]));
+  if (media.cropW) for (const [key, field] of [['cropX', 'crop_x'], ['cropY', 'crop_y'], ['cropW', 'crop_w'], ['cropH', 'crop_h']]) body.set(field, String(media[key]));
   return body;
 }
 
@@ -73,9 +83,48 @@ const RESIZE_SHORT = { contain: '等比', pad: '补边', crop: '裁剪' };
 export function describeMedia(media) {
   const time = !media.start && !media.end ? '整段' : media.end ? `${seconds(media.start)}–${seconds(media.end)}` : `${seconds(media.start)}起到结尾`;
   const size = media.width ? `${media.width}×${media.height} ${RESIZE_SHORT[media.resize]}` : '自动尺寸';
-  const parts = [time, size];
+  const parts = [time, ...(media.cropW ? [`选区 ${media.cropW}×${media.cropH}`] : []), size];
   if (media.kind === 'sticker' && media.fit === 'trim') parts.push('超 3 秒截断');
   if (media.fps) parts.push(`≤${media.fps} fps`);
   if (media.quality !== 'standard') parts.push(QUALITIES.find(([v]) => v === media.quality)[1]);
   return parts.join(' · ');
+}
+
+function evenFit(w, h, side) {
+  if (w > side || h > side) [w, h] = w >= h ? [side, Math.floor(h * side / w)] : [Math.floor(w * side / h), side];
+  return [Math.max(2, w & ~1), Math.max(2, h & ~1)];
+}
+
+// 与服务端 convert.planMedia 相同的几何：先取选区，再按缩放方式放进画布。
+// 返回成品尺寸 out、源画面里实际取用的区域 src（原始像素），以及它在成品里的位置 dst。
+export function geometry(kind, source, media) {
+  const base = media.cropW ? { x: media.cropX, y: media.cropY, w: media.cropW, h: media.cropH } : { x: 0, y: 0, w: source.w, h: source.h };
+  let [w, h] = [media.width, media.height];
+  if (!w) [w, h] = kind === 'sticker' ? [512, 512] : evenFit(base.w, base.h, 1280);
+  const mode = media.resize || 'contain';
+  let sw, sh;
+  if (base.w * h >= base.h * w) [sw, sh] = [w, Math.max(2, Math.floor(base.h * w / base.w) & ~1)];
+  else [sw, sh] = [Math.max(2, Math.floor(base.w * h / base.h) & ~1), h];
+  let src = base;
+  if (mode === 'crop') {
+    let [cw, ch] = [base.w, base.h];
+    if (cw * h > ch * w) cw = Math.max(1, Math.floor(ch * w / h)); else ch = Math.max(1, Math.floor(cw * h / w));
+    src = { x: base.x + Math.floor((base.w - cw) / 2), y: base.y + Math.floor((base.h - ch) / 2), w: cw, h: ch };
+    [sw, sh] = [w, h];
+  }
+  const out = mode === 'pad' ? { w, h } : { w: sw, h: sh };
+  const dst = { x: Math.floor((out.w - sw) / 2), y: Math.floor((out.h - sh) / 2), w: sw, h: sh };
+  const error = kind === 'sticker' && Math.max(out.w, out.h) !== 512
+    ? `等比缩放后成品是 ${out.w} × ${out.h}，贴纸长边必须是 512。请改用补边或居中裁剪，或换一个画布尺寸。` : '';
+  return { out, src, dst, error };
+}
+
+export const STICKER_SECONDS = 2.99;
+// 片段与成品时长：贴纸超过 3 秒时加速或只保留开头，GIF 原样保留。
+export function timing(kind, duration, media) {
+  const start = media.start || 0, end = media.end || duration;
+  const clip = Math.max(0, end - start);
+  if (kind !== 'sticker' || clip <= 3) return { start, end, clip, output: clip, rate: 1 };
+  if (media.fit === 'trim') return { start, end: start + STICKER_SECONDS, clip, output: STICKER_SECONDS, rate: 1 };
+  return { start, end, clip, output: STICKER_SECONDS, rate: clip / STICKER_SECONDS };
 }

@@ -44,12 +44,21 @@ func planMedia(info Info, m api.MediaOptions, sticker bool) (mediaPlan, error) {
 		}
 		p.filters = append(p.filters, "setpts=PTS-STARTPTS")
 	}
+	// 选区之后，后续的尺寸都以选区为准
+	bw, bh := info.W, info.H
+	if m.CropW != 0 {
+		if m.CropX+m.CropW > info.W || m.CropY+m.CropH > info.H {
+			return p, fmt.Errorf("选区超出原画面 %d × %d", info.W, info.H)
+		}
+		p.filters = append(p.filters, fmt.Sprintf("crop=%d:%d:%d:%d:exact=1", m.CropW, m.CropH, m.CropX, m.CropY))
+		bw, bh = m.CropW, m.CropH
+	}
 	w, h := m.Width, m.Height
 	if w == 0 {
 		if sticker {
 			w, h = StickerSide, StickerSide
 		} else {
-			w, h = evenFit(info.W, info.H, gifMaxSide)
+			w, h = evenFit(bw, bh, gifMaxSide)
 		}
 	}
 	mode := m.Resize
@@ -58,13 +67,13 @@ func planMedia(info Info, m api.MediaOptions, sticker bool) (mediaPlan, error) {
 	}
 	// 限制边直接使用目标整数，避免 512/原宽 的浮点误差把合法贴纸误算成 510。
 	var sw, sh int
-	if int64(info.W)*int64(h) >= int64(info.H)*int64(w) {
-		sw, sh = w, max(2, int(int64(info.H)*int64(w)/int64(info.W))&^1)
+	if int64(bw)*int64(h) >= int64(bh)*int64(w) {
+		sw, sh = w, max(2, int(int64(bh)*int64(w)/int64(bw))&^1)
 	} else {
-		sw, sh = max(2, int(int64(info.W)*int64(h)/int64(info.H))&^1), h
+		sw, sh = max(2, int(int64(bw)*int64(h)/int64(bh))&^1), h
 	}
 	if mode == "crop" {
-		cw, ch := info.W, info.H
+		cw, ch := bw, bh
 		if int64(cw)*int64(h) > int64(ch)*int64(w) {
 			cw = max(1, ch*w/h)
 		} else {

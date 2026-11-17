@@ -28,7 +28,8 @@ func mediaOptions(form map[string]string, sticker bool) (api.Upload, error) {
 	for _, field := range [...]struct {
 		key string
 		dst *int
-	}{{"width", &u.Width}, {"height", &u.Height}, {"fps", &u.FPS}} {
+	}{{"width", &u.Width}, {"height", &u.Height}, {"fps", &u.FPS},
+		{"crop_x", &u.CropX}, {"crop_y", &u.CropY}, {"crop_w", &u.CropW}, {"crop_h", &u.CropH}} {
 		key, dst := field.key, field.dst
 		s := strings.TrimSpace(form[key])
 		if s == "" {

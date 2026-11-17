@@ -250,6 +250,8 @@ func mediaFields(m MediaOptions) map[string]string {
 		"end":   strconv.FormatFloat(m.End, 'f', -1, 64),
 		"width": strconv.Itoa(m.Width), "height": strconv.Itoa(m.Height),
 		"resize": m.Resize, "fps": strconv.Itoa(m.FPS), "quality": m.Quality,
+		"crop_x": strconv.Itoa(m.CropX), "crop_y": strconv.Itoa(m.CropY),
+		"crop_w": strconv.Itoa(m.CropW), "crop_h": strconv.Itoa(m.CropH),
 	}
 }
 

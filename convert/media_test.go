@@ -120,3 +120,38 @@ func TestDefaultStickerKeepsExactLongEdge(t *testing.T) {
 		}
 	}
 }
+
+// 左红右蓝的图，框选右下角一块：结果必须是蓝色，尺寸按选区计算
+func TestSourceSelectionCropsChosenRegion(t *testing.T) {
+	ff := tool(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	in := filepath.Join(dir, "halves.png")
+	if err := ff.run(ctx, "-f", "lavfi", "-i", "color=c=red:s=200x100[l];color=c=blue:s=200x100[r];[l][r]hstack", "-frames:v", "1", in); err != nil {
+		t.Fatal(err)
+	}
+	sel := api.MediaOptions{CropX: 260, CropY: 20, CropW: 120, CropH: 60, Width: 512, Height: 256, Resize: "pad"}
+	st, err := ff.Sticker(ctx, in, dir, api.Upload{MediaOptions: sel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, b, _ := img.At(256, 128).RGBA()
+	if img.Bounds().Dx() != 512 || img.Bounds().Dy() != 256 || b < 50000 || r > 10000 {
+		t.Fatalf("selection not applied: bounds=%v R=%d B=%d", img.Bounds(), r, b)
+	}
+	if _, err := planMedia(Info{W: 400, H: 100}, api.MediaOptions{CropX: 300, CropW: 120, CropH: 60}, false); err == nil {
+		t.Fatal("selection outside the frame was accepted")
+	}
+	plan, err := planMedia(Info{W: 4000, H: 3000}, api.MediaOptions{CropX: 100, CropY: 100, CropW: 600, CropH: 300}, false)
+	if err != nil || plan.w != 600 || plan.h != 300 {
+		t.Fatalf("auto GIF size must follow the selection: %dx%d, %v", plan.w, plan.h, err)
+	}
+}

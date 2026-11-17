@@ -1,6 +1,8 @@
 import { Client } from './api.js';
 import { codeDelivery, resendStatus } from './login.js';
 import { GIF_SIZES, QUALITIES, RESIZE_MODES, STICKER_SIZES, appendMedia, defaultMedia, describeMedia, snapshotMedia } from './media.js';
+import { button, el, input, link, select, text } from './dom.js';
+import { openEditor } from './editor.js';
 
 const root = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -12,29 +14,6 @@ let poll = null, epoch = 0, thumbActive = 0, thumbQueue = [];
 const media = { sticker: defaultMedia('sticker'), gif: defaultMedia('gif') }, mediaOpen = { sticker: false, gif: false };
 let loginBusy = false, qrImageURL = '', qrImageKey = '', qrPendingKey = '';
 
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [name, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (name.startsWith('on')) node.addEventListener(name.slice(2).toLowerCase(), value);
-    else if (name === 'class') node.className = value;
-    else if (name === 'text') node.textContent = value;
-    else if (name in node && !name.startsWith('aria-')) node[name] = value;
-    else node.setAttribute(name, value === true ? '' : value);
-  }
-  node.append(...children.flat().filter(x => x !== null && x !== undefined));
-  return node;
-}
-const text = (tag, content, className) => el(tag, { text: content, class: className });
-const button = (label, action, className = '', disabled = false) => el('button', { type: 'button', class: className, text: label, disabled, onclick: action });
-const link = (label, href) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', text: label });
-function input(name, label, attrs = {}) {
-  return el('label', { class: 'field' }, text('span', label), el('input', { name, ...attrs }));
-}
-function select(name, label, values, current) {
-  const field = el('select', { name }, values.map(([value, label]) => el('option', { value, text: label, selected: current === value })));
-  return el('label', { class: 'field' }, text('span', label), field);
-}
 function notify(message) {
   notices.replaceChildren(text('div', message, 'notice'));
   clearTimeout(notify.timer);
@@ -342,12 +321,18 @@ function uploadZone(target) {
   const error = text('p', '', 'error'); error.role = 'alert';
   const zone = el('section', { class: 'upload-zone', 'aria-label': '文件上传' },
     el('div', { class: 'upload-heading' }, el('div', {}, text('h2', gif ? '添加到 GIF 收藏' : '添加贴纸'),
-      text('p', gif ? '拖入动图，上传时由服务器转换并存进 Telegram 的 GIF 收藏。默认保留整段，不受贴纸的 3 秒限制。' : '拖入图片或 GIF，上传时由服务器转换成合适的贴纸格式。支持一次选择多个文件。', 'muted')),
+      text('p', gif ? '拖入动图，上传时由服务器转换并存进 Telegram 的 GIF 收藏。默认保留整段，不受贴纸的 3 秒限制。' : '拖入图片或 GIF，上传时由服务器转换成合适的贴纸格式。', 'muted'),
+      text('p', '一次选一个文件会打开编辑器，可以拖动选片段、框选画面并预览成品；一次选多个文件则按下面的设置直接排队。', 'hint')),
       button('选择文件', () => picker.click(), 'primary', !state.ffmpeg)),
     fileOptions(kind), error, picker,
     text('p', '单个文件最大 50 MB。上传与转换过程中请保持本页打开。', 'hint'));
   const take = files => {
     if (!files.length) return;
+    if (files.length === 1 && state.ffmpeg) {
+      const [file] = validateFiles(files);
+      if (file) openEditor({ file, kind, raw: media[kind], openModal, notify, onAdd: snap => { enqueue([file], target, snap); renderPage(); } });
+      return;
+    }
     const snap = takeMedia(kind, error, zone.querySelector('details'));
     if (snap) enqueue(files, target, snap);
   };
@@ -449,10 +434,16 @@ function pumpThumbs() {
   }
 }
 
-function openModal(title, children) {
+// onClose 在对话框关闭（或内容被换掉）时调用一次，编辑器用它停止播放、释放解码器
+let modalCleanup = null;
+modal.addEventListener('close', () => { modal.classList.remove('wide'); const done = modalCleanup; modalCleanup = null; done?.(); });
+function openModal(title, children, { wide = false, onClose = null } = {}) {
+  const previous = modalCleanup; modalCleanup = null; previous?.();
   modal.replaceChildren(el('div', { class: 'dialog-header' }, text('h2', title), button('关闭', () => modal.close(), 'quiet')),
     ...children);
   modal.querySelector('h2').id = 'modal-title';
+  modal.classList.toggle('wide', wide);
+  modalCleanup = onClose;
   if (!modal.open) modal.showModal();
 }
 function confirmAction(title, description, label, action) {

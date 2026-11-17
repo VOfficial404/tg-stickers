@@ -145,6 +145,8 @@ type MediaOptions struct {
 	Resize  string // contain 等比缩放、pad 补边、crop 居中裁剪
 	FPS     int    // 帧率上限，0 表示自动
 	Quality string // standard、high、small
+	// 源画面选区（原始像素），在截取时段之后、缩放之前裁出；宽高同时为 0 表示整幅画面
+	CropX, CropY, CropW, CropH int
 }
 
 // SetPatch 修改贴纸包；只改不为空的字段

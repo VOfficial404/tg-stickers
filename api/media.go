@@ -13,6 +13,15 @@ func (m MediaOptions) ValidateMedia(sticker bool) error {
 	if m.End != 0 && m.End <= m.Start {
 		return errors.New("结束时间必须晚于开始时间；留空或填 0 表示直到结尾")
 	}
+	if m.CropX < 0 || m.CropY < 0 || m.CropW < 0 || m.CropH < 0 {
+		return errors.New("选区的位置和大小不能是负数")
+	}
+	if (m.CropW == 0) != (m.CropH == 0) || (m.CropW == 0 && (m.CropX != 0 || m.CropY != 0)) {
+		return errors.New("选区需要同时有宽度和高度；不框选时位置也要为 0")
+	}
+	if m.CropW != 0 && (m.CropW < 2 || m.CropH < 2) {
+		return errors.New("选区宽高至少为 2 像素")
+	}
 	if (m.Width == 0) != (m.Height == 0) {
 		return errors.New("请同时填写目标宽度和高度，或同时留空使用自动尺寸")
 	}
