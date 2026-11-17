@@ -1,0 +1,13 @@
+*
+!go.mod
+!go.sum
+!api
+!api/**
+!account
+!account/**
+!convert
+!convert/**
+!server
+!server/**
+!cmd
+!cmd/**

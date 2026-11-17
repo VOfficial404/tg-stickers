@@ -1,0 +1,27 @@
+services:
+  tg-stickers:
+    image: ghcr.io/VOfficial404/tg-stickers:latest
+    # 想自己从源码构建，把上面一行注释掉，换成：
+    # build: .
+    container_name: tg-stickers
+    restart: unless-stopped
+    environment:
+      # 客户端连接时要填的令牌。留空时自动生成，用 docker compose exec tg-stickers tg-stickers token 查看
+      TG_STICKERS_TOKEN: ${TG_STICKERS_TOKEN:-}
+      # my.telegram.org 申请的 api_id / api_hash。留空时在客户端里填
+      TG_STICKERS_API_ID: ${TG_STICKERS_API_ID:-}
+      TG_STICKERS_API_HASH: ${TG_STICKERS_API_HASH:-}
+      # 服务器连不上 Telegram 时用的 SOCKS5 代理，例如 socks5://172.17.0.1:1080
+      TG_STICKERS_PROXY: ${TG_STICKERS_PROXY:-}
+    ports:
+      # 默认只监听服务器本机，通过 SSH 隧道或 HTTPS 反向代理访问。
+      # 确实要直接对外开放，改成 "8787:8787"（明文 HTTP，令牌会被看到，不推荐）
+      - "127.0.0.1:${TG_STICKERS_PORT:-8787}:8787"
+    volumes:
+      # Telegram 会话、令牌、缩略图缓存都在这里。会话等于账号的登录状态，别泄露
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "3"

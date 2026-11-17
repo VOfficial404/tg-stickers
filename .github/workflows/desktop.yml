@@ -1,0 +1,56 @@
+name: Desktop
+
+on:
+  push:
+    branches: [main]
+    paths: ["api/**", "app/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["api/**", "app/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, platform: "darwin/universal" }
+          - { name: Windows, os: ubuntu-latest, platform: "windows/amd64,windows/arm64" }
+          - { name: Linux, os: ubuntu-latest, platform: "linux/amd64,linux/arm64" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: app/go.mod
+      - name: Install NSIS
+        if: matrix.name == 'Windows'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - run: go tool mygo build -platform "${{ matrix.platform }}"
+      - name: Portable Windows archives
+        if: matrix.name == 'Windows'
+        run: |
+          version="$(jq -r .version mygo.json)"
+          for dir in build/windows-*; do
+            arch="${dir#build/windows-}"
+            (cd "$dir" && zip -q "../tg-stickers-desktop-${version}-windows-${arch}-portable.zip" "TG Stickers.exe")
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Desktop-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            app/build/*/*.dmg
+            app/build/*/*-setup-*.exe
+            app/build/*-portable.zip
+            app/build/*/*.deb
+            app/build/*/*.tar.gz
