@@ -44,6 +44,11 @@ type app struct {
 	confirmAction          func()
 
 	login loginForm
+	// qrURL 是正在显示（或正在取图）的登录二维码，qrImg 只在它对应的图取回后才设置
+	qrURL  string
+	qrImg  *ui.Bitmap
+	qrErr  string
+	notice string // 上次提示过的 CodeNotice，变了才再提示
 
 	sets       []api.SetSummary
 	setsLoaded bool
@@ -254,6 +259,46 @@ func (a *app) applyState(st api.State) {
 	if st.Step != api.StepReady && wasReady {
 		a.sets, a.setsLoaded, a.set, a.gifs, a.gifsLoaded = nil, false, nil, nil, false
 	}
+	if st.CodeNotice != a.notice {
+		a.notice = st.CodeNotice
+		if st.CodeNotice != "" {
+			a.toast(st.CodeNotice)
+		}
+	}
+	a.syncQR(st)
+}
+
+// syncQR 在二维码换了（服务端刷新了登录令牌）时重新取图，离开扫码页时丢掉旧图
+func (a *app) syncQR(st api.State) {
+	if st.Step != api.StepQR || st.QR == nil {
+		a.qrURL, a.qrImg, a.qrErr = "", nil, ""
+		return
+	}
+	if st.QR.URL != a.qrURL {
+		a.qrURL = st.QR.URL
+		a.loadQR()
+	}
+}
+
+// loadQR 取当前二维码的图；回来时二维码已经换了就丢掉，不让旧图盖住新图
+func (a *app) loadQR() {
+	url := a.qrURL
+	a.qrImg, a.qrErr = nil, ""
+	request(a, func(ctx context.Context, c *api.Client) ([]byte, error) { return c.QRImage(ctx) }, func(b []byte, err error) {
+		if url != a.qrURL {
+			return
+		}
+		var bm *ui.Bitmap
+		if err == nil {
+			bm, err = ui.DecodeBitmap(b)
+		}
+		if err != nil {
+			// 不把二维码地址写进提示：它就是登录凭据
+			a.qrErr = "二维码加载失败：" + a.failed(err)
+			return
+		}
+		a.qrImg = bm
+	})
 }
 
 func (a *app) refreshState() {

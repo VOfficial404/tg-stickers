@@ -16,7 +16,7 @@ import (
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
-	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/auth/qrlogin"
 	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
 	"golang.org/x/net/proxy"
@@ -39,18 +39,32 @@ type Config struct {
 type Account struct {
 	cfg Config
 
-	mu           sync.Mutex
-	creds        api.Credentials
-	step         string
-	codeVia      string
-	passwordHint string
+	mu      sync.Mutex
+	creds   api.Credentials
+	step    string
+	user    *api.User
+	lastErr string
+	client  *telegram.Client
+	stop    context.CancelFunc
+	done    chan struct{}
+	// connCtx 在当前连接断开时取消；loggedIn 收到 Telegram 推来的扫码成功通知
+	connCtx  context.Context
+	loggedIn qrlogin.LoggedIn
+	// connGen 每次连上、断开都加一，loginGen 每次登录重新开始都加一（连上、断开也算）；
+	// 后台跑完的登录操作对不上就不再改状态
+	connGen  uint64
+	loginGen uint64
+
+	// 进行到一半的登录，resetLoginLocked 清掉
+	busy         bool // 正在发验证码、登录等，同一时间只做一个
 	phone        string
 	codeHash     string
-	user         *api.User
-	lastErr      string
-	client       *telegram.Client
-	stop         context.CancelFunc
-	done         chan struct{}
+	code         codeState
+	passwordHint string
+	qr           *api.LoginQR
+	qrCancel     context.CancelFunc
+	loginCancel  context.CancelFunc
+	loginErr     string
 
 	docsMu sync.Mutex
 	docs   map[int64]docRef
@@ -118,18 +132,26 @@ func (a *Account) startLocked() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	a.stop, a.done = cancel, done
-	go a.run(ctx, done, resolver)
+	go a.run(ctx, done, resolver, a.creds)
 }
 
 // stopLocked 让连接退出，返回它退出时关闭的 channel
 func (a *Account) stopLocked() chan struct{} {
+	a.disconnectedLocked()
 	if a.stop == nil {
 		return nil
 	}
 	a.stop()
 	done := a.done
-	a.stop, a.done, a.client = nil, nil, nil
+	a.stop, a.done = nil, nil
 	return done
+}
+
+// disconnectedLocked 忘掉当前连接和进行到一半的登录
+func (a *Account) disconnectedLocked() {
+	a.resetLoginLocked()
+	a.connGen++
+	a.client, a.connCtx, a.loggedIn = nil, nil, nil
 }
 
 func (a *Account) resolver() (dcs.Resolver, error) {
@@ -153,12 +175,11 @@ func (a *Account) resolver() (dcs.Resolver, error) {
 	}}), nil
 }
 
-// run 保持连接；连不上时隔一会儿重试，直到 ctx 取消
-func (a *Account) run(ctx context.Context, done chan struct{}, resolver dcs.Resolver) {
+// run 保持连接，直到服务停止；本次应用凭据在连接生命周期内不改变。
+func (a *Account) run(ctx context.Context, done chan struct{}, resolver dcs.Resolver, creds api.Credentials) {
 	defer close(done)
 	opts := telegram.Options{
 		SessionStorage: &session.FileStorage{Path: a.sessionPath()},
-		NoUpdates:      true,
 		Device: telegram.DeviceConfig{
 			DeviceModel:   "tg-stickers",
 			SystemVersion: "server",
@@ -169,9 +190,13 @@ func (a *Account) run(ctx context.Context, done chan struct{}, resolver dcs.Reso
 		opts.Resolver = resolver
 	}
 	for wait := 5 * time.Second; ; wait = min(wait*2, 5*time.Minute) {
-		client := telegram.NewClient(a.creds.APIID, a.creds.APIHash, opts)
+		// 扫码登录要收 updateLoginToken，其余的推送不用管
+		d := tg.NewUpdateDispatcher()
+		loggedIn := qrlogin.OnLoginToken(d)
+		opts.UpdateHandler = d
+		client := telegram.NewClient(creds.APIID, creds.APIHash, opts)
 		err := client.Run(ctx, func(ctx context.Context) error {
-			if err := a.connected(ctx, client, done); err != nil {
+			if err := a.connected(ctx, client, loggedIn, done); err != nil {
 				return err
 			}
 			wait = 5 * time.Second
@@ -185,7 +210,8 @@ func (a *Account) run(ctx context.Context, done chan struct{}, resolver dcs.Reso
 		a.cfg.Logf("连接 Telegram 出错，%s 后重试：%s", wait, msg)
 		a.mu.Lock()
 		if a.done == done {
-			a.client, a.step, a.lastErr = nil, api.StepConnecting, msg
+			a.disconnectedLocked()
+			a.step, a.lastErr = api.StepConnecting, msg
 		}
 		a.mu.Unlock()
 		select {
@@ -197,7 +223,7 @@ func (a *Account) run(ctx context.Context, done chan struct{}, resolver dcs.Reso
 }
 
 // connected 在连上之后查登录状态；done 不是当前连接的（已经换了 api_id）就不动状态
-func (a *Account) connected(ctx context.Context, client *telegram.Client, done chan struct{}) error {
+func (a *Account) connected(ctx context.Context, client *telegram.Client, loggedIn qrlogin.LoggedIn, done chan struct{}) error {
 	st, err := client.Auth().Status(ctx)
 	if err != nil {
 		return err
@@ -207,11 +233,12 @@ func (a *Account) connected(ctx context.Context, client *telegram.Client, done c
 	if a.done != done {
 		return nil
 	}
-	a.client, a.lastErr = client, ""
+	a.disconnectedLocked()
+	a.client, a.connCtx, a.loggedIn, a.lastErr = client, ctx, loggedIn, ""
 	if st.Authorized {
 		a.step, a.user = api.StepReady, toUser(st.User)
 		a.cfg.Logf("已登录 Telegram：%s", a.user.Name)
-	} else if a.step != api.StepCode && a.step != api.StepPassword {
+	} else {
 		a.step, a.user = api.StepPhone, nil
 		a.cfg.Logf("已连上 Telegram，等待登录")
 	}
@@ -234,11 +261,23 @@ func (a *Account) State() api.State {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := api.State{Step: a.step, Error: a.lastErr, CredentialsFromEnv: a.credentialsFromEnv()}
+	if s.Error == "" {
+		s.Error = a.loginErr
+	}
 	switch a.step {
 	case api.StepCode:
-		s.CodeVia = a.codeVia
+		c := a.code
+		s.CodeVia, s.CodeSent, s.CodeNotice, s.CodeNext, s.CodeCanResend = c.via, c.sent, c.notice, c.next, c.next != ""
+		if !c.retryAt.IsZero() {
+			s.CodeRetryAt = c.retryAt.Unix()
+		}
 	case api.StepPassword:
 		s.PasswordHint = a.passwordHint
+	case api.StepQR:
+		if a.qr != nil {
+			qr := *a.qr
+			s.QR = &qr
+		}
 	case api.StepReady:
 		s.User = a.user
 	}
@@ -291,149 +330,6 @@ func (a *Account) ready() (*telegram.Client, error) {
 		return nil, unauthorized("还没有登录 Telegram 账号")
 	}
 	return a.client, nil
-}
-
-// loginClient 返回还没登录的连接
-func (a *Account) loginClient(steps ...string) (*telegram.Client, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.client == nil {
-		if a.step == api.StepCredentials {
-			return nil, userError("先填写 api_id 和 api_hash")
-		}
-		return nil, unavailable("正在连接 Telegram，稍后再试")
-	}
-	for _, s := range steps {
-		if a.step == s {
-			return a.client, nil
-		}
-	}
-	if a.step == api.StepReady {
-		return nil, userError("已经登录了")
-	}
-	return nil, userError("登录步骤对不上，刷新一下重新来")
-}
-
-// SendCode 给手机号发验证码
-func (a *Account) SendCode(ctx context.Context, phone string) error {
-	phone = normalizePhone(phone)
-	if len(phone) < 6 {
-		return userError("手机号要带国家码，例如 +8613800000000")
-	}
-	client, err := a.loginClient(api.StepPhone, api.StepCode, api.StepPassword)
-	if err != nil {
-		return err
-	}
-	sent, err := client.Auth().SendCode(ctx, phone, auth.SendCodeOptions{})
-	if err != nil {
-		return humanize(err)
-	}
-	switch s := sent.(type) {
-	case *tg.AuthSentCode:
-		a.mu.Lock()
-		a.step, a.phone, a.codeHash, a.codeVia = api.StepCode, phone, s.PhoneCodeHash, codeVia(s.Type)
-		a.mu.Unlock()
-		return nil
-	case *tg.AuthSentCodeSuccess:
-		return a.signedIn(ctx, client)
-	default:
-		return fmt.Errorf("Telegram 的回复看不懂：%T", sent)
-	}
-}
-
-func normalizePhone(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-func codeVia(t tg.AuthSentCodeTypeClass) string {
-	switch t.(type) {
-	case *tg.AuthSentCodeTypeApp:
-		return "已登录的 Telegram App（看「Telegram」官方账号发来的消息）"
-	case *tg.AuthSentCodeTypeSMS, *tg.AuthSentCodeTypeSMSWord, *tg.AuthSentCodeTypeSMSPhrase, *tg.AuthSentCodeTypeFirebaseSMS:
-		return "短信"
-	case *tg.AuthSentCodeTypeCall:
-		return "电话语音"
-	case *tg.AuthSentCodeTypeFlashCall, *tg.AuthSentCodeTypeMissedCall:
-		return "未接来电（号码的最后几位就是验证码）"
-	case *tg.AuthSentCodeTypeEmailCode:
-		return "邮箱"
-	case *tg.AuthSentCodeTypeFragmentSMS:
-		return "Fragment"
-	}
-	return "Telegram"
-}
-
-// SignIn 提交验证码
-func (a *Account) SignIn(ctx context.Context, code string) error {
-	code = strings.TrimSpace(code)
-	client, err := a.loginClient(api.StepCode)
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	phone, hash := a.phone, a.codeHash
-	a.mu.Unlock()
-	_, err = client.Auth().SignIn(ctx, phone, code, hash)
-	if errors.Is(err, auth.ErrPasswordAuthNeeded) {
-		hint := ""
-		if p, err := client.API().AccountGetPassword(ctx); err == nil {
-			hint = p.Hint
-		}
-		a.mu.Lock()
-		a.step, a.passwordHint = api.StepPassword, hint
-		a.mu.Unlock()
-		return nil
-	}
-	var signUp *auth.SignUpRequired
-	if errors.As(err, &signUp) {
-		return userError("这个手机号还没有注册 Telegram，先在 Telegram App 里注册")
-	}
-	if err != nil {
-		return humanize(err)
-	}
-	return a.signedIn(ctx, client)
-}
-
-// Password 提交两步验证密码
-func (a *Account) Password(ctx context.Context, password string) error {
-	client, err := a.loginClient(api.StepPassword)
-	if err != nil {
-		return err
-	}
-	if _, err := client.Auth().Password(ctx, password); err != nil {
-		if errors.Is(err, auth.ErrPasswordInvalid) {
-			return userError("两步验证密码不对")
-		}
-		return humanize(err)
-	}
-	return a.signedIn(ctx, client)
-}
-
-func (a *Account) signedIn(ctx context.Context, client *telegram.Client) error {
-	self, err := client.Self(ctx)
-	if err != nil {
-		return humanize(err)
-	}
-	a.mu.Lock()
-	a.step, a.user, a.phone, a.codeHash, a.codeVia, a.passwordHint = api.StepReady, toUser(self), "", "", "", ""
-	a.mu.Unlock()
-	a.cfg.Logf("已登录 Telegram：%s", toUser(self).Name)
-	return nil
-}
-
-// CancelLogin 放弃进行到一半的登录
-func (a *Account) CancelLogin() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.step == api.StepCode || a.step == api.StepPassword {
-		a.step, a.phone, a.codeHash, a.codeVia, a.passwordHint = api.StepPhone, "", "", "", ""
-	}
 }
 
 // Logout 在 Telegram 上注销这次登录，删掉会话文件后重新连接

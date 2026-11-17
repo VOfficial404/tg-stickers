@@ -186,6 +186,24 @@ func (c *Client) SendCode(ctx context.Context, phone string) (s State, err error
 	return s, err
 }
 
+// ResendCode 按 Telegram 返回的等待时间和下一发送渠道重发，保留当前登录请求。
+func (c *Client) ResendCode(ctx context.Context) (s State, err error) {
+	err = c.do(ctx, http.MethodPost, "/api/login/resend", nil, &s)
+	return s, err
+}
+
+// StartQR 开始手机 Telegram 扫码登录；二维码和后续状态由 State 返回。
+func (c *Client) StartQR(ctx context.Context) (s State, err error) {
+	err = c.do(ctx, http.MethodPost, "/api/login/qr", nil, &s)
+	return s, err
+}
+
+// QRImage 获取当前登录二维码；调用方应在二维码 URL 改变时重新取图。
+func (c *Client) QRImage(ctx context.Context) (b []byte, err error) {
+	err = c.do(ctx, http.MethodGet, "/api/login/qr.png", nil, &b)
+	return b, err
+}
+
 // SignIn 提交验证码；账号开了两步验证时返回的 Step 是 password
 func (c *Client) SignIn(ctx context.Context, code string) (s State, err error) {
 	err = c.do(ctx, http.MethodPost, "/api/login/code", CodeRequest{Code: code}, &s)

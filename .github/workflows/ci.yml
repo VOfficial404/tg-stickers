@@ -55,4 +55,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
-      - run: bun test ./web/api.test.js
+      - run: bun test ./web/

@@ -1,4 +1,5 @@
 import { Client } from './api.js';
+import { codeDelivery, resendStatus } from './login.js';
 
 const root = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -7,6 +8,7 @@ let client = null, state = null, page = 'sets', pack = null, selected = null;
 let sets = [], gifs = [], queue = [], pumping = false, loading = false;
 let poll = null, epoch = 0, thumbActive = 0, thumbQueue = [];
 const options = { emoji: '🙂', fit: 'speed' };
+let loginBusy = false, qrImageURL = '', qrImageKey = '', qrPendingKey = '';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -88,12 +90,13 @@ function tokenScreen() {
 }
 function disconnect() {
   epoch++; client?.close(); client = null; state = null; pack = null; selected = null;
+  clearQRImage(); loginBusy = false;
   sets = []; gifs = []; queue = []; pumping = false; loading = false; thumbQueue = [];
   clearInterval(poll); modal.close();
   try { sessionStorage.removeItem('tg-stickers-token'); } catch { /* 没有可用存储 */ }
   tokenScreen();
 }
-function startPolling() { clearInterval(poll); poll = setInterval(() => void pollState(), 3000); }
+function startPolling() { clearInterval(poll); poll = setInterval(() => { updateLoginTimers(); void pollState(); }, 1000); }
 let polling = false;
 async function pollState(force = false) {
   if (!client || polling) return;
@@ -104,19 +107,24 @@ async function pollState(force = false) {
   try {
     const next = await c.request('/state');
     if (c !== client || gen !== epoch) return;
-    const changed = next.step !== state?.step || next.error !== state?.error;
+    const changed = next.step !== state?.step || next.error !== state?.error || next.qr?.url !== state?.qr?.url
+      || next.code_notice !== state?.code_notice || next.code_via !== state?.code_via
+      || next.code_sent !== state?.code_sent || next.code_next !== state?.code_next
+      || next.code_retry_at !== state?.code_retry_at || next.code_can_resend !== state?.code_can_resend;
     state = next;
     if (changed) await enterState();
   } catch (err) { if (gen === epoch) showError(err); }
   finally { polling = false; }
 }
 async function enterState() {
+  if (state.step !== 'qr') clearQRImage();
   if (state.step === 'ready') { renderShell(); await loadPage(); }
   else { modal.close(); pack = null; selected = null; renderTelegramLogin(); }
 }
 function renderTelegramLogin() {
   const step = state.step;
   const error = text('p', '', 'error'); error.role = 'alert';
+  if (step === 'qr') { renderQRLogin(error); return; }
   const form = el('form', { class: 'form-stack' });
   let title, desc, fields, endpoint, method = 'POST', toBody;
   if (step === 'credentials') {
@@ -126,13 +134,17 @@ function renderTelegramLogin() {
     endpoint = '/credentials'; method = 'PUT';
     toBody = data => ({ api_id: Number(data.get('api_id')), api_hash: data.get('api_hash').trim() });
   } else if (step === 'phone') {
-    title = '登录 Telegram'; desc = '登录你创建贴纸包时使用的账号。手机号需要包含国家码。';
-    fields = [input('phone', '手机号', { type: 'tel', required: true, placeholder: '+86 …', autocomplete: 'tel' })];
+    title = '登录 Telegram'; desc = '已有手机 Telegram 登录？可以直接扫码，不需要等待短信。';
+    fields = [button('使用手机 Telegram 扫码登录', () => void loginAction('/login/qr', error), 'primary'),
+      text('p', '或使用手机号获取验证码。发送渠道由 Telegram 决定，第三方程序不能强制发送短信。', 'hint'),
+      input('phone', '国际区号 + 手机号', { type: 'tel', required: true, placeholder: '美国：+1 加 10 位手机号', autocomplete: 'tel' })];
     endpoint = '/login/phone'; toBody = data => ({ phone: data.get('phone') });
   } else if (step === 'code') {
-    title = '输入验证码'; desc = `验证码已发到${state.code_via || 'Telegram'}。`;
-    fields = [input('code', '验证码', { required: true, autocomplete: 'one-time-code', inputMode: 'numeric' })];
-    endpoint = '/login/code'; toBody = data => ({ code: data.get('code').trim() });
+    title = state.code_sent ? '输入验证码' : '当前渠道需要额外验证'; desc = codeDelivery(state);
+    fields = [];
+    if (state.code_notice) fields.push(text('p', state.code_notice, 'warning'));
+    if (state.code_sent) fields.push(input('code', '验证码（也可能是单词或短语）', { required: true, autocomplete: 'one-time-code' }));
+    endpoint = '/login/code'; toBody = data => ({ code: String(data.get('code') || '').trim() });
   } else if (step === 'password') {
     title = '两步验证'; desc = '你的账号开启了两步验证，请输入 Telegram 密码。';
     fields = [input('password', '两步验证密码', { type: 'password', required: true, autocomplete: 'current-password' })];
@@ -145,21 +157,91 @@ function renderTelegramLogin() {
       button('断开服务器', disconnect));
     loginFrame('连接 Telegram', '连接成功后将自动继续。', content); return;
   }
-  form.append(...fields, error, el('button', { type: 'submit', class: 'primary', text: step === 'credentials' ? '保存并连接' : step === 'phone' ? '发送验证码' : '登录' }));
+  form.append(...fields, error);
+  if (step !== 'code' || state.code_sent) form.append(el('button', { type: 'submit', class: 'primary', text: step === 'credentials' ? '保存并连接' : step === 'phone' ? '发送验证码' : '登录' }));
   form.addEventListener('submit', event => {
-    event.preventDefault(); const body = toBody(new FormData(form)); busyForm(form, true); error.textContent = '';
-    const c = client;
-    void run(async () => {
-      const next = await c.request(endpoint, method, body);
-      if (c !== client) return;
-      state = next; form.reset(); await enterState();
-    }, error).finally(() => busyForm(form, false));
+    event.preventDefault();
+    if (step === 'code' && !state.code_sent) return;
+    const body = toBody(new FormData(form));
+    void loginAction(endpoint, error, method, body);
   });
-  if (step === 'code' || step === 'password') form.append(button('换个手机号 / 重新获取验证码', () => void run(async () => {
-    const c = client; const next = await c.request('/login', 'DELETE'); if (c !== client) return; state = next; renderTelegramLogin();
-  }, error), 'quiet'));
+  if (step === 'code') {
+    const resend = button('', () => void loginAction('/login/resend', error)); resend.id = 'resend-code';
+    form.append(resend, button('收不到？改用扫码登录', () => void loginAction('/login/qr', error), 'quiet'));
+  }
+  if (step === 'code' || step === 'password') form.append(button('换个手机号 / 重新开始', () => void loginAction('/login', error, 'DELETE'), 'quiet'));
   form.append(button('断开服务器', disconnect, 'quiet'));
   loginFrame(title, desc, form);
+  busyForm(form, loginBusy); updateLoginTimers();
+}
+
+async function loginAction(endpoint, error, method = 'POST', body) {
+  if (loginBusy || !client) return;
+  const c = client, gen = epoch;
+  const form = root.querySelector('form');
+  loginBusy = true; error.textContent = '';
+  if (form) busyForm(form, true);
+  try {
+    const next = await c.request(endpoint, method, body);
+    if (gen !== epoch) return;
+    state = next;
+    if (form) form.reset();
+    await enterState();
+  } catch (err) { if (gen === epoch) showError(err, error); }
+  finally {
+    if (gen === epoch) {
+      loginBusy = false;
+      const current = root.querySelector('form');
+      if (current) busyForm(current, false);
+      updateLoginTimers();
+    }
+  }
+}
+
+function updateLoginTimers() {
+  const resend = document.querySelector('#resend-code');
+  if (resend && state?.step === 'code') {
+    const status = resendStatus(state);
+    resend.textContent = status.label; resend.disabled = loginBusy || status.disabled;
+  }
+  const expiry = document.querySelector('#qr-expiry');
+  if (expiry && state?.step === 'qr') {
+    const remaining = Math.max(0, Math.ceil(Number(state.qr?.expires || 0) - Date.now() / 1000));
+    expiry.textContent = !state.qr ? '正在生成二维码…' : remaining ? `${remaining} 秒后自动更新` : '二维码已过期，正在等待更新…';
+  }
+}
+
+function clearQRImage() {
+  if (qrImageURL) URL.revokeObjectURL(qrImageURL);
+  qrImageURL = ''; qrImageKey = ''; qrPendingKey = '';
+}
+
+function renderQRLogin(error) {
+  const current = state.qr?.url;
+  const picture = el('div', { class: 'qr-picture', id: 'login-qr' });
+  if (current && qrImageKey === current && qrImageURL) picture.append(el('img', { src: qrImageURL, alt: '使用手机 Telegram 扫描此二维码', width: 260, height: 260 }));
+  else picture.append(text('p', '正在生成二维码…', 'muted'));
+  const form = el('form', { class: 'form-stack', onsubmit: event => event.preventDefault() },
+    picture, text('p', '', 'hint qr-expiry'),
+    text('p', '在已登录的手机 Telegram 中打开：设置 → 设备 → 连接桌面设备，扫描上面的二维码并确认。', 'muted'),
+    text('p', '二维码只用于授权你的服务器登录。请勿分享给其他人。', 'hint'), error,
+    state.error ? text('p', state.error, 'error') : null,
+    button('重新生成二维码', () => void loginAction('/login/qr', error)),
+    button('改用手机号登录', () => void loginAction('/login', error, 'DELETE'), 'quiet'),
+    button('断开服务器', disconnect, 'quiet'));
+  form.querySelector('.qr-expiry').id = 'qr-expiry';
+  loginFrame('手机 Telegram 扫码登录', '不需要手机号验证码。手机上需要已有登录的 Telegram 账号。', form);
+  busyForm(form, loginBusy); updateLoginTimers();
+  if (!current || qrImageKey === current || qrPendingKey === current) return;
+  const c = client, gen = epoch;
+  qrPendingKey = current;
+  void c.fetch('/login/qr.png').then(response => response.blob()).then(blob => {
+    if (gen !== epoch || state?.step !== 'qr' || state.qr?.url !== current) return;
+    clearQRImage(); qrImageURL = URL.createObjectURL(blob); qrImageKey = current;
+    const currentPicture = document.querySelector('#login-qr');
+    if (currentPicture) currentPicture.replaceChildren(el('img', { src: qrImageURL, alt: '使用手机 Telegram 扫描此二维码', width: 260, height: 260 }));
+  }).catch(err => { if (gen === epoch && state?.qr?.url === current) showError(err, error); })
+    .finally(() => { if (qrPendingKey === current) qrPendingKey = ''; });
 }
 
 function renderShell() {

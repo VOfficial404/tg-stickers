@@ -182,3 +182,6 @@ dialog .upload-options .field { width: auto; flex: 1 1 180px; }
   dialog { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
+.qr-picture { display: grid; place-items: center; min-height: 260px; border-radius: 10px; background: #fff; color: #172c3d; padding: 12px; }
+.qr-picture img { width: min(260px, 100%); height: auto; image-rendering: pixelated; }
+.qr-expiry { text-align: center; }

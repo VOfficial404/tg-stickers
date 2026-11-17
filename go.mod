@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/gotd/td v0.166.1
 	golang.org/x/net v0.57.0
+	rsc.io/qr v0.2.0
 )
 
 require (
@@ -45,5 +46,4 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	rsc.io/qr v0.2.0 // indirect
 )

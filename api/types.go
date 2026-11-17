@@ -11,8 +11,9 @@ type Ping struct {
 const (
 	StepCredentials = "credentials" // 还没有 api_id / api_hash
 	StepPhone       = "phone"       // 等手机号
-	StepCode        = "code"        // 验证码已发出，等验证码
+	StepCode        = "code"        // 已经向 Telegram 要了验证码，等验证码；有没有真的发出看 State.CodeSent
 	StepPassword    = "password"    // 账号开了两步验证，等密码
+	StepQR          = "qr"          // 扫码登录，等手机上的 Telegram 扫 State.QR
 	StepReady       = "ready"       // 已登录
 	StepConnecting  = "connecting"  // 正在连接 Telegram，稍后再查
 )
@@ -23,14 +24,32 @@ type State struct {
 	Step    string `json:"step"`
 	// CodeVia 说明验证码发到了哪里（Telegram App、短信……），Step 为 code 时有
 	CodeVia string `json:"code_via,omitempty"`
+	// CodeSent 为假时 Telegram 没有用这个工具能收到的方式发出验证码，看 CodeNotice
+	CodeSent bool `json:"code_sent"`
+	// CodeNotice 是验证码去哪里找、或者为什么收不到的说明
+	CodeNotice string `json:"code_notice,omitempty"`
+	// CodeNext 是重新发送时 Telegram 会改用的方式；为空表示没有别的方式
+	CodeNext string `json:"code_next,omitempty"`
+	// CodeCanResend 为真时 Telegram 提供了下一种发送方式，到了 CodeRetryAt 才能重发
+	CodeCanResend bool `json:"code_can_resend"`
+	// CodeRetryAt 是能重新发送的时间（Unix 秒）；0 表示不用等
+	CodeRetryAt int64 `json:"code_retry_at,omitempty"`
+	// QR 是扫码登录的二维码，Step 为 qr 时有；刚开始还在生成时为空
+	QR *LoginQR `json:"qr,omitempty"`
 	// PasswordHint 是两步验证密码的提示，Step 为 password 时可能有
 	PasswordHint string `json:"password_hint,omitempty"`
 	// CredentialsFromEnv 为真时 api_id / api_hash 来自环境变量，客户端里不能改
 	CredentialsFromEnv bool   `json:"credentials_from_env"`
 	User               *User  `json:"user,omitempty"`
-	Error              string `json:"error,omitempty"` // 连接 Telegram 出的错
+	Error              string `json:"error,omitempty"` // 连接 Telegram 或扫码登录出的错
 	FFmpeg             string `json:"ffmpeg"`          // ffmpeg 版本；为空表示找不到 ffmpeg，没法转换
 	Limits             Limits `json:"limits"`
+}
+
+// LoginQR 是扫码登录的二维码内容，过期前会换新的
+type LoginQR struct {
+	URL     string `json:"url"`     // tg://login?token=…，生成二维码用
+	Expires int64  `json:"expires"` // 过期时间，Unix 秒
 }
 
 // Limits 是上传的限制，客户端用来提前提示

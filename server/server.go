@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"rsc.io/qr"
+
 	"github.com/VOfficial404/tg-stickers/account"
 	"github.com/VOfficial404/tg-stickers/api"
 	"github.com/VOfficial404/tg-stickers/convert"
@@ -107,6 +109,9 @@ func (s *Server) Handler() http.Handler {
 				writeError(w, http.StatusUnauthorized, "令牌不对")
 				return
 			}
+			if strings.HasPrefix(r.URL.Path, "/api/login") || r.URL.Path == "/api/state" {
+				w.Header().Set("Cache-Control", "no-store")
+			}
 			out, err := h(w, r)
 			if err != nil {
 				status, msg := http.StatusInternalServerError, err.Error()
@@ -125,7 +130,9 @@ func (s *Server) Handler() http.Handler {
 				writeJSON(w, struct{}{})
 			case []byte:
 				w.Header().Set("Content-Type", http.DetectContentType(out))
-				w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+				if w.Header().Get("Cache-Control") == "" {
+					w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+				}
 				w.Write(out)
 			default:
 				writeJSON(w, out)
@@ -150,6 +157,24 @@ func (s *Server) Handler() http.Handler {
 			return nil, err
 		}
 		return s.stateAfter(s.acc.SendCode(r.Context(), p.Phone))
+	})
+	auth("POST /api/login/resend", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return s.stateAfter(s.acc.ResendCode(r.Context()))
+	})
+	auth("POST /api/login/qr", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return s.stateAfter(s.acc.StartQR())
+	})
+	auth("GET /api/login/qr.png", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		st := s.acc.State()
+		if st.Step != api.StepQR || st.QR == nil || st.QR.Expires <= time.Now().Unix() {
+			return nil, &account.Error{Status: http.StatusConflict, Message: "二维码正在生成或已过期，请稍后刷新"}
+		}
+		code, err := qr.Encode(st.QR.URL, qr.M)
+		if err != nil {
+			return nil, err
+		}
+		code.Scale = 6
+		return code.PNG(), nil
 	})
 	auth("POST /api/login/code", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var p api.CodeRequest

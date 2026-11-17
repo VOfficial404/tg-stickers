@@ -32,6 +32,7 @@ func TestHandlerServesWebAndProtectsAPI(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		path        string
+		method      string
 		token       string
 		status      int
 		contentType string
@@ -42,11 +43,19 @@ func TestHandlerServesWebAndProtectsAPI(t *testing.T) {
 		{name: "state rejects wrong token", path: "/api/state", token: "wrong-token", status: http.StatusUnauthorized, contentType: "application/json"},
 		{name: "state accepts token", path: "/api/state", token: "test-token", status: http.StatusOK, contentType: "application/json"},
 		{name: "unknown API", path: "/api/unknown", status: http.StatusNotFound},
+		{name: "QR image requires token", path: "/api/login/qr.png", status: http.StatusUnauthorized, contentType: "application/json"},
+		{name: "QR start requires token", method: http.MethodPost, path: "/api/login/qr", status: http.StatusUnauthorized, contentType: "application/json"},
+		{name: "resend requires token", method: http.MethodPost, path: "/api/login/resend", status: http.StatusUnauthorized, contentType: "application/json"},
+		{name: "QR unavailable before login starts", path: "/api/login/qr.png", token: "test-token", status: http.StatusConflict, contentType: "application/json"},
 		{name: "unknown API with token", path: "/api/unknown", token: "test-token", status: http.StatusNotFound},
 		{name: "unknown page", path: "/missing-page", status: http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			method := tc.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			req := httptest.NewRequest(method, tc.path, nil)
 			if tc.token != "" {
 				req.Header.Set("Authorization", "Bearer "+tc.token)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -188,7 +189,7 @@ func (a *app) connectView(c *ui.Context) {
 	})
 }
 
-/* 登录页：api_id → 手机号 → 验证码 → 两步验证密码 */
+/* 登录页：api_id → 手机号 → 验证码（或扫码） → 两步验证密码 */
 
 func (a *app) loginView(c *ui.Context) {
 	t := c.Theme()
@@ -216,19 +217,15 @@ func (a *app) loginView(c *ui.Context) {
 						}
 					case api.StepPhone:
 						ui.Field(c, "手机号（带国家码）", func() {
-							ui.TextInput(c.Key("phone"), &f.phone).Placeholder("+86 138 0000 0000").Disabled(f.busy).OnSubmit(a.sendCode)
+							ui.TextInput(c.Key("phone"), &f.phone).Placeholder("+ 国家码 + 号码").Disabled(f.busy).OnSubmit(a.sendCode)
 						})
+						muted(c, "以 + 和国家码开头，例如美国是 +1 再加 10 位号码。").FontSize(12)
 						ui.PrimaryButton(c.Key("send-code"), "发送验证码").Disabled(f.busy).OnClick(a.sendCode)
+						a.qrEntry(c)
 					case api.StepCode:
-						muted(c, "验证码已发到"+st.CodeVia+"。").FontSize(13)
-						ui.Field(c, "验证码", func() {
-							ui.TextInput(c.Key("code"), &f.code).Disabled(f.busy).AutoFocus().OnSubmit(a.signIn)
-						})
-						ui.Row(c).Gap(8).Children(func() {
-							ui.PrimaryButton(c.Key("sign-in"), "登录").Disabled(f.busy).OnClick(a.signIn)
-							ui.Button(c.Key("resend"), "重新发送").Disabled(f.busy).OnClick(a.sendCode)
-							ui.Button(c.Key("change-phone"), "换个手机号").Disabled(f.busy).OnClick(a.cancelLogin)
-						})
+						a.codeForm(c)
+					case api.StepQR:
+						a.qrForm(c)
 					case api.StepPassword:
 						muted(c, "这个账号开了两步验证，请输入密码。").FontSize(13)
 						ui.Field(c, "两步验证密码", func() {
@@ -285,6 +282,94 @@ func (a *app) saveCredentials() {
 func (a *app) sendCode() {
 	phone := a.login.phone
 	a.loginStep(func(ctx context.Context, c *api.Client) (api.State, error) { return c.SendCode(ctx, phone) })
+}
+
+// codeForm 是验证码页：服务端确认发出了才说已发送，重发要等 Telegram 给的时间
+func (a *app) codeForm(c *ui.Context) {
+	st, f := a.st, &a.login
+	if st.CodeSent {
+		via := st.CodeVia
+		if via == "" {
+			via = "你的 Telegram"
+		}
+		muted(c, "验证码已发到"+via+"。").FontSize(13)
+	} else {
+		muted(c, "Telegram 还没有确认发出验证码。").FontSize(13)
+	}
+	if st.CodeNotice != "" {
+		ui.Text(c, st.CodeNotice).FontSize(13).Selectable()
+	}
+	if st.CodeNext != "" {
+		muted(c, "重新发送时 Telegram 会改用："+st.CodeNext).FontSize(12)
+	}
+	if st.CodeSent {
+		ui.Field(c, "验证码", func() {
+			ui.TextInput(c.Key("code"), &f.code).Disabled(f.busy).AutoFocus().OnSubmit(a.signIn)
+		})
+	}
+	wait := st.CodeRetryAt - time.Now().Unix()
+	resend := "重新发送"
+	if st.CodeCanResend && wait > 0 {
+		resend = "重新发送（" + strconv.FormatInt(wait, 10) + " 秒）"
+	}
+	ui.Row(c).Gap(8).Children(func() {
+		if st.CodeSent {
+			ui.PrimaryButton(c.Key("sign-in"), "登录").Disabled(f.busy).OnClick(a.signIn)
+		}
+		ui.Button(c.Key("resend"), resend).Disabled(f.busy || !st.CodeCanResend || wait > 0).OnClick(a.resendCode)
+		ui.Button(c.Key("change-phone"), "换个手机号").Disabled(f.busy).OnClick(a.cancelLogin)
+	})
+	if !st.CodeCanResend {
+		muted(c, "Telegram 没有提供其他发送方式，收不到可以改用扫码登录。").FontSize(12)
+	}
+	a.qrEntry(c)
+}
+
+// qrEntry 是手机号和验证码页上的扫码登录入口
+func (a *app) qrEntry(c *ui.Context) {
+	muted(c, "收不到验证码？手机上的 Telegram 已经登录这个账号时，可以扫码登录。").FontSize(12)
+	ui.Button(c.Key("start-qr"), "用手机扫码登录").Disabled(a.login.busy).OnClick(a.startQR)
+}
+
+// qrForm 是扫码页：二维码过期后服务端会换新的，轮询状态时自动取新图
+func (a *app) qrForm(c *ui.Context) {
+	st, f := a.st, &a.login
+	muted(c, "在已登录这个账号的手机上打开 Telegram，进入「设置 → 设备 → 连接桌面设备」，扫描下面的二维码。").FontSize(13)
+	ui.Row(c).Center().Children(func() {
+		ui.Box(c).Size(244, 244).Padding(12).Radius(10).Background(ui.Hex("#ffffff")).Center().Children(func() {
+			if a.qrImg != nil {
+				ui.Image(c, a.qrImg).Size(220, 220).Fit(ui.Contain)
+			} else if a.qrErr == "" && st.Error == "" {
+				ui.Spinner(c)
+			}
+		})
+	})
+	if st.QR != nil {
+		if left := st.QR.Expires - time.Now().Unix(); left > 0 {
+			muted(c, "二维码 "+strconv.FormatInt(left, 10)+" 秒后过期，过期后会自动换新的。").FontSize(12)
+		} else {
+			muted(c, "二维码已过期，正在换新的…").FontSize(12)
+		}
+	}
+	switch {
+	case st.Error != "":
+		errorText(c, st.Error)
+		ui.Button(c.Key("qr-restart"), "重新扫码登录").Disabled(f.busy).OnClick(a.startQR)
+	case st.QR == nil:
+		muted(c, "正在生成二维码…").FontSize(12)
+	case a.qrErr != "":
+		errorText(c, a.qrErr)
+		ui.Button(c.Key("qr-retry"), "重新加载二维码").Disabled(f.busy).OnClick(a.loadQR)
+	}
+	ui.Button(c.Key("qr-cancel"), "改用手机号登录").Disabled(f.busy).OnClick(a.cancelLogin)
+}
+
+func (a *app) resendCode() {
+	a.loginStep(func(ctx context.Context, c *api.Client) (api.State, error) { return c.ResendCode(ctx) })
+}
+
+func (a *app) startQR() {
+	a.loginStep(func(ctx context.Context, c *api.Client) (api.State, error) { return c.StartQR(ctx) })
 }
 
 func (a *app) signIn() {
