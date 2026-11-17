@@ -56,8 +56,13 @@ func planMedia(info Info, m api.MediaOptions, sticker bool) (mediaPlan, error) {
 	if mode == "" {
 		mode = "contain"
 	}
-	scale := min(float64(w)/float64(info.W), float64(h)/float64(info.H))
-	sw, sh := max(2, int(float64(info.W)*scale)&^1), max(2, int(float64(info.H)*scale)&^1)
+	// 限制边直接使用目标整数，避免 512/原宽 的浮点误差把合法贴纸误算成 510。
+	var sw, sh int
+	if int64(info.W)*int64(h) >= int64(info.H)*int64(w) {
+		sw, sh = w, max(2, int(int64(info.H)*int64(w)/int64(info.W))&^1)
+	} else {
+		sw, sh = max(2, int(int64(info.W)*int64(h)/int64(info.H))&^1), h
+	}
 	if mode == "crop" {
 		cw, ch := info.W, info.H
 		if int64(cw)*int64(h) > int64(ch)*int64(w) {

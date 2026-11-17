@@ -109,3 +109,14 @@ func TestSelectedVideoStickerStillMeetsTelegramLimit(t *testing.T) {
 		t.Fatalf("custom sticker broke Telegram limits: %+v bytes=%d", info, fi.Size())
 	}
 }
+
+func TestDefaultStickerKeepsExactLongEdge(t *testing.T) {
+	for _, long := range []int{49, 98, 103, 161, 196, 206, 322} {
+		for _, size := range [][2]int{{long, long}, {long, long / 2}, {long / 2, long}} {
+			plan, err := planMedia(Info{W: size[0], H: size[1]}, api.MediaOptions{}, true)
+			if err != nil || max(plan.w, plan.h) != 512 {
+				t.Errorf("default sticker %dx%d rejected or shrunk: %dx%d, %v", size[0], size[1], plan.w, plan.h, err)
+			}
+		}
+	}
+}
