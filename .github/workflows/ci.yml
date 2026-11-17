@@ -22,6 +22,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: go vet ./...
       - run: go build ./cmd/tg-stickers
+      - name: Build Windows smoke artifact
+        run: |
+          mkdir -p out
+          GOOS=windows GOARCH=amd64 go build -o out/tg-stickers.exe ./cmd/tg-stickers
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Server-Windows-smoke
+          path: out/tg-stickers.exe
       - run: go test ./...
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
@@ -41,3 +49,10 @@ jobs:
       - run: go vet ./...
       - name: Windows build check
         run: GOOS=windows go vet ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun test ./web/api.test.js

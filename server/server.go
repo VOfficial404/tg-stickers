@@ -20,6 +20,7 @@ import (
 	"github.com/VOfficial404/tg-stickers/account"
 	"github.com/VOfficial404/tg-stickers/api"
 	"github.com/VOfficial404/tg-stickers/convert"
+	"github.com/VOfficial404/tg-stickers/web"
 )
 
 // MaxUploadBytes 是一个上传文件的上限
@@ -96,6 +97,7 @@ func (s *Server) Token() string { return s.token }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /", web.Handler())
 	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, api.Ping{Name: "tg-stickers", Version: s.version})
 	})

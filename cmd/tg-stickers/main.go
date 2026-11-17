@@ -1,7 +1,7 @@
 // tg-stickers 的服务端：用你自己的 Telegram 账号管理贴纸包，把 GIF 转换成视频贴纸。
 //
-//	tg-stickers [serve]   常驻运行，提供给客户端的接口
-//	tg-stickers token     显示客户端连接时要填的令牌
+//	tg-stickers [serve]   常驻运行，提供浏览器面板和客户端接口
+//	tg-stickers token     显示浏览器或客户端连接时要填的令牌
 //	tg-stickers version
 package main
 
@@ -31,15 +31,15 @@ var version = "dev"
 const usage = `tg-stickers：用自己的 Telegram 账号管理贴纸包，把 GIF 转换成视频贴纸
 
 用法：
-  tg-stickers [serve]   常驻运行，提供给客户端的接口
-  tg-stickers token     显示客户端连接时要填的令牌
+  tg-stickers [serve]   常驻运行，提供浏览器面板和客户端接口
+  tg-stickers token     显示浏览器或客户端连接时要填的令牌
   tg-stickers version
 
 环境变量：
   TG_STICKERS_DATA      数据目录，默认是程序所在目录下的 data
   TG_STICKERS_ADDR      监听地址，默认 127.0.0.1:8787（只有本机能连）
   TG_STICKERS_TOKEN     接口令牌，默认自动生成并保存在数据目录里
-  TG_STICKERS_API_ID    在 my.telegram.org 申请的 api_id（也可以在客户端里填）
+  TG_STICKERS_API_ID    在 my.telegram.org 申请的 api_id（也可以在浏览器里填）
   TG_STICKERS_API_HASH  在 my.telegram.org 申请的 api_hash
   TG_STICKERS_PROXY     连接 Telegram 用的代理，例如 socks5://127.0.0.1:1080
   TG_STICKERS_FFMPEG    ffmpeg 的路径，默认在 PATH 里找
@@ -150,7 +150,7 @@ func serve() error {
 	} else {
 		logger.Printf("没法转换贴纸：%s", why)
 	}
-	logger.Printf("监听 %s：客户端连接时填这个地址和下面的令牌", listenURL(addr))
+	logger.Printf("浏览器打开 %s，输入下面的令牌开始使用；桌面客户端也可连接此地址", listenURL(addr))
 	logger.Printf("令牌：%s", srv.Token())
 
 	acc.Start()

@@ -11,3 +11,5 @@
 !server/**
 !cmd
 !cmd/**
+!web
+!web/**

@@ -9,6 +9,7 @@ COPY api ./api
 COPY account ./account
 COPY convert ./convert
 COPY server ./server
+COPY web ./web
 COPY cmd ./cmd
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /out/tg-stickers ./cmd/tg-stickers

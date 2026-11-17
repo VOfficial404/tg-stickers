@@ -10,10 +10,12 @@ on:
       - "account/**"
       - "convert/**"
       - "server/**"
+      - "web/**"
       - "cmd/**"
       - "go.mod"
       - "go.sum"
       - "Dockerfile"
+      - ".dockerignore"
       - ".github/workflows/docker.yml"
   workflow_dispatch:
 
