@@ -42,7 +42,7 @@ function showError(err, target) {
   if (err.status === 401) { disconnect(); notify('令牌不对或已经更换，请重新输入。'); return; }
   if (target?.isConnected) { target.textContent = message; target.hidden = false; }
   else notify(message);
-  if (err.status === 409 || err.status === 503) void pollState();
+  if (err.status === 409 || err.status === 503) void pollState(true);
 }
 async function run(work, errorNode) {
   try { await work(); } catch (err) { showError(err, errorNode); }
@@ -95,10 +95,10 @@ function disconnect() {
 }
 function startPolling() { clearInterval(poll); poll = setInterval(() => void pollState(), 3000); }
 let polling = false;
-async function pollState() {
+async function pollState(force = false) {
   if (!client || polling) return;
   // 已登录时一分钟检查一次，避免与管理操作争抢连接。
-  if (state?.step === 'ready' && Date.now() - (pollState.last || 0) < 60000) return;
+  if (!force && state?.step === 'ready' && Date.now() - (pollState.last || 0) < 60000) return;
   const c = client, gen = epoch;
   polling = true; pollState.last = Date.now();
   try {
@@ -360,7 +360,9 @@ function deletePack() {
   const name = pack.short_name, title = pack.title;
   confirmAction('删除整个贴纸包？', `「${title}」将从 Telegram 删除，其他人也无法再添加。此操作无法撤销。`, '删除贴纸包', async () => {
     const c = client; await c.request(`/sets/${encodeURIComponent(name)}`, 'DELETE'); if (c !== client) return;
-    sets = sets.filter(s => s.short_name !== name); if (pack?.short_name === name) pack = null; if (page === 'sets') renderPage(); notify('贴纸包已删除');
+    sets = sets.filter(s => s.short_name !== name);
+    if (pack?.short_name === name) { pack = null; loading = false; }
+    if (page === 'sets') renderPage(); notify('贴纸包已删除');
   });
 }
 function createPack() {
